@@ -151,6 +151,22 @@ class RequirementCache:
         self.needs[mod_id] = needs
         self.fetched[mod_id] = time.time()
 
+    def touch(self, mod_id: int) -> None:
+        """Mark a mod as asked about when Nexus answered with nothing.
+
+        An alias comes back null for a mod that has been hidden, deleted
+        or made adult-only, and that is a real answer: it will keep being
+        null. Without a stamp such a mod is stale forever and is re-asked
+        on every single sort.
+
+        Any answer already stored is kept rather than blanked. A null can
+        also be Nexus having a bad moment, and throwing away a good list
+        of requirements on that basis is the more expensive mistake. The
+        normal age-out still re-checks it next week.
+        """
+        self.needs.setdefault(mod_id, [])
+        self.fetched[mod_id] = time.time()
+
     def forget(self, mod_id: int) -> None:
         """Drop one mod's requirements, so they are fetched again.
 
@@ -222,6 +238,7 @@ def fetch(mod_ids, cache: RequirementCache, game: int,
         for mod in chunk:
             entry = data.get("m{}".format(mod))
             if entry is None:
+                cache.touch(mod)
                 continue
             nodes = ((entry.get("modRequirements") or {}).get(
                 "nexusRequirements") or {}).get("nodes") or []

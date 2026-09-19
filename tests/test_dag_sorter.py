@@ -1074,6 +1074,34 @@ with _tempfile.TemporaryDirectory() as _folder:
         check("_post keeps the reason a batch failed", "no raise", True)
 
 
+# -- a mod Nexus has nothing to say about is not re-asked forever --------
+# Three mods survived every sweep unstamped: hidden or deleted on Nexus,
+# so their alias comes back null, so put() never ran, so they were stale
+# again next sort. A null is an answer; it just must not blank a good one.
+
+with _tempfile.TemporaryDirectory() as _folder:
+    _tp = os.path.join(_folder, "nexus_requirements.json")
+    _tc = _requirements.RequirementCache(_tp)
+
+    _tc.touch(900)
+    check("a null answer counts as asked", _tc.stale(900), False)
+    check("and reads as no requirements", _tc.needs[900], [])
+
+    _tc.put(901, [(7, "needs this")])
+    _tc.touch(901)
+    check("a null does not blank an answer already stored",
+          _tc.needs[901], [(7, "needs this")])
+    check("but it does refresh the stamp", _tc.stale(901), False)
+
+    # End to end: a batch of nulls must leave nothing stale behind.
+    _nulls = _FlakyClient()
+    _nulls.graphql = lambda q, variables=None: {}
+    _nc = _requirements.RequirementCache(os.path.join(_folder, "n.json"))
+    _requirements.fetch([700, 701, 702], _nc, 1704, client=_nulls)
+    check("an all-null batch leaves nothing to re-ask",
+          [i for i in (700, 701, 702) if _nc.stale(i)], [])
+
+
 if failures:
     print("FAILED")
     for f in failures:
