@@ -179,7 +179,7 @@ class DagSorterTool(mobase.IPluginTool):
         override_key = str(self._organizer.pluginSetting(
             self.name(), "nexus_api_key") or "").strip()
         if not override_key:
-            # The vault holds one key for every plugin, encrypted, so the
+            # The vault holds one key for every plugin, sealed, so the
             # ini does not have to hold a plain-text copy of it.
             override_key = vault_key.key(self._organizer)
         cache_dir = self._organizer.pluginDataPath()

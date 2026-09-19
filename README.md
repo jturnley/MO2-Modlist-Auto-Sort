@@ -94,7 +94,7 @@ own headings.
 
 Every Nexus call this plugin makes goes through the
 [Nexus API Extender](https://github.com/jturnley/MO2-Nexus-API-Extender).
-That means one encrypted key and **one response cache** shared with your
+That means one stored key and **one response cache** shared with your
 other plugins, rather than a second copy of each kept here: a mod this
 sorter looked up is already paid for when something else asks about it, and
 a second scan does not re-ask Nexus for what has not changed.
@@ -102,7 +102,7 @@ a second scan does not re-ask Nexus for what has not changed.
 It is listed as a requirement rather than an optional extra. But a
 requirement is a thing people skip, so nothing here fails without it - the
 plugin falls back to its own connection, and the report says which one it
-used. What you lose is the shared cache and the encrypted key.
+used. What you lose is the shared cache and the protected key.
 
 **A key is not required.** Mod requirements come from v2 GraphQL, which needs
 no credential, so they resolve for everyone. A key is what lets the tiering

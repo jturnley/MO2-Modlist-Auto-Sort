@@ -1,8 +1,8 @@
 """Ask the Nexus API Key Vault for a key, if it is installed.
 
-The vault keeps one key for every plugin, encrypted for the Windows
-account, instead of each plugin storing its own copy in plain text in
-ModOrganizer.ini.  It is an optional dependency in the fullest sense: not
+The vault keeps one key for every plugin, sealed as strongly as the
+platform allows, instead of each plugin storing its own copy in plain
+text in ModOrganizer.ini.  It is an optional dependency in the fullest sense: not
 installed is the normal case, and everything here answers "" for it.
 
 The sorter's own `nexus_api_key` setting still works and still wins if it

@@ -63,7 +63,7 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     command-line runner uses.
 
     ``client`` is a Nexus client from the MO2 Nexus API Extender.  When one
-    is given, every Nexus call goes through it: one encrypted key and one
+    is given, every Nexus call goes through it: one stored key and one
     response cache shared with every other plugin, instead of a second copy
     of each kept here.  Without one, this plugin's own transport runs, which
     is what happened before the Extender existed.

@@ -1,6 +1,6 @@
 """Where the sorter gets its Nexus connection.
 
-The MO2 Nexus API Extender holds one key for every plugin, encrypted, and
+The MO2 Nexus API Extender holds one key for every plugin, sealed, and
 hands out a client that already knows v1, v2 and v3 and caches what comes
 back.  Going through it means the sorter is not maintaining a second HTTP
 layer, a second cache, and a second copy of the rules about not draining
@@ -83,7 +83,7 @@ def status(client) -> str:
     """One line for the report, saying where the metadata came from."""
     if client is None:
         return ("Nexus API Extender not installed - using this plugin's own "
-                "connection. Installing it shares one encrypted key and one "
+                "connection. Installing it shares one stored key and one "
                 "response cache across your plugins.")
     where = "with your stored key" if client.has_key else "without a key"
     left = client.remaining()

@@ -78,8 +78,8 @@ class KeyDialog(QDialog):
             "category table from v1 when MO2's connection is not "
             "available.\n\n"
             "Better still, install the MO2 Nexus API Extender: it keeps "
-            "one key for every plugin, encrypted for your Windows "
-            "account, instead of a plain-text copy per plugin here. "
+            "one key for every plugin, sealed as strongly as your system "
+            "allows, instead of a plain-text copy per plugin here. "
             "This sorter uses it automatically when it is present.",
             self)
         why.setWordWrap(True)
