@@ -120,6 +120,36 @@ a mod's category is set once and essentially never changes.
 The first sort after upgrading to 0.9.1 re-checks everything, because
 entries written by earlier versions carry no timestamp and could be any age.
 
+### When a batch comes back refused
+
+Twenty mods go out under one query, which is what makes a 700-mod sweep
+affordable. It also means Nexus can refuse all twenty over one id it will
+not answer for — `Nexus rejected the query: Mod not found` — and the
+nineteen good ones go down with it.
+
+A refused query and a dropped connection are told apart, because they want
+opposite handling:
+
+| What happened | What the sorter does |
+| --- | --- |
+| Nexus refused the query | Split the batch and retry each half, until the id causing it is alone |
+| The connection failed | Wait and carry on with the next batch; stop after three in a row |
+| One id still refused on its own | Stamp it and report it, so no later sort pays to find out again |
+| An id comes back `null` | Stamp it, but keep any answer already stored |
+
+Splitting is bounded — about a dozen requests to isolate one bad id out of
+twenty, not one request per mod. Batches it never got to are left stale, so
+the next sort retries exactly those and nothing else.
+
+Both halves of that mattered. Before 0.9.4 the first failure stopped the
+whole sweep, so one bad id partway through a 740-mod list cost the 380 mods
+behind it, on every run. And the reason never reached the report, which said
+only that nothing had been looked up — so the report now names the failure
+and counts what was missed.
+
+An id that answers when asked alone is not a broken mod and is not treated
+as one. It is stamped like any other answer.
+
 The rest of the graph still comes from cache during that run. Placing one mod
 correctly means knowing what everything else is, so the whole list is walked
 either way — re-asking about all of it would spend hundreds of requests to
