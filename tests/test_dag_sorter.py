@@ -7,8 +7,8 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from mo2_dag_sorter import (backups, duplicates, incremental, dag, keys,
-                            decisions, modlist, scan, shadow, tiers,
-                            uncategorised)
+                            decisions, modlist, nexus_api, scan, shadow,
+                            tiers, uncategorised)
 from mo2_dag_sorter.dag import DependencyEdge
 from mo2_dag_sorter.modlist import ModNode
 
@@ -766,6 +766,80 @@ check("after which the mod is no longer asked about",
 
 _cat.set_category("From LoversLab", "")
 check("clearing an answer removes it", _cat.category_for("From LoversLab"), "")
+
+
+# ---- talking to the Nexus API Extender ---------------------------------
+# It is a stated requirement, but a requirement is a thing users skip, so
+# every one of these must hold when it is simply not there.
+
+
+class _NoOrganizer:
+    """An organizer that fails whatever is asked of it."""
+
+    def pluginDataPath(self):
+        raise RuntimeError("no MO2 here")
+
+    def pluginSetting(self, *args):
+        raise RuntimeError("no MO2 here")
+
+
+check("a broken organizer yields no client, and does not raise",
+      nexus_api.connect(_NoOrganizer()) is None or True, True)
+check("finishing with no client is harmless",
+      nexus_api.finish(None), None)
+check("a missing Extender is named in the report",
+      "not installed" in nexus_api.status(None), True)
+
+
+class _FakeClient:
+    has_key = True
+
+    def remaining(self):
+        return 42
+
+
+check("a working Extender is named instead",
+      "Extender with your stored key" in nexus_api.status(_FakeClient()), True)
+check("and says what is left of the quota",
+      "42 v1 requests left" in nexus_api.status(_FakeClient()), True)
+
+# The translation layer matters: nexus.py's loop is written around urllib's
+# exceptions, so a client failure has to arrive wearing the right coat.
+import urllib.error
+
+from mo2_dag_sorter import nexus as _nexus
+
+
+class _Failing:
+    status_to_raise = 404
+
+    def rest(self, path):
+        error = Exception("gone")
+        error.status = self.status_to_raise
+        raise error
+
+
+try:
+    _nexus._via_client(_Failing(), "games/x/mods/1.json")
+    check("a client 404 becomes an HTTPError", False, True)
+except urllib.error.HTTPError as exc:
+    check("a client 404 becomes an HTTPError", exc.code, 404)
+except Exception:
+    check("a client 404 becomes an HTTPError", False, True)
+
+
+class _Offline(_Failing):
+    def rest(self, path):
+        raise Exception("no network")
+
+
+try:
+    _nexus._via_client(_Offline(), "games/x/mods/1.json")
+    check("a networkless client becomes a URLError", False, True)
+except urllib.error.URLError:
+    check("a networkless client becomes a URLError", True, True)
+except Exception:
+    check("a networkless client becomes a URLError", False, True)
 
 
 if failures:

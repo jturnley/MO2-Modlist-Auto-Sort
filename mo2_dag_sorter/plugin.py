@@ -17,7 +17,8 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from . import (backups, category_ui, context_menu, dag,
                decisions as decisions_mod,
                incremental, modlist, nexus, nexus_bridge, pipeline,
-               key_ui, resolve_ui, restore_ui, stacks, vault_key)
+               key_ui, nexus_api, resolve_ui, restore_ui, stacks,
+               vault_key)
 
 VERSION = mobase.VersionInfo(0, 9, 0, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
@@ -157,6 +158,16 @@ class DagSorterTool(mobase.IPluginTool):
     def tr(self, text: str) -> str:
         return QCoreApplication.translate("DagSorter", text)
 
+    def _nexus(self):
+        """The shared Nexus client, built once per session.
+
+        Reused so the response cache is not reopened on every menu click,
+        and so a whole batch of freezes costs one connection.
+        """
+        if not hasattr(self, "_nexus_client"):
+            self._nexus_client = nexus_api.connect(self._organizer)
+        return self._nexus_client
+
     # -- the run ---------------------------------------------------------
     def display(self) -> None:
         parent = QApplication.activeWindow()
@@ -194,7 +205,7 @@ class DagSorterTool(mobase.IPluginTool):
         try:
             result = pipeline.sort_profile(
                 root, profile, api_key=override_key or None, domain=domain,
-                cache_dir=cache_dir, resolver=resolver, decisions=rules)
+                cache_dir=cache_dir, resolver=resolver, decisions=rules, client=self._nexus())
         except dag.CycleError as exc:
             self._show_cycle(parent, exc)
             return
@@ -212,7 +223,7 @@ class DagSorterTool(mobase.IPluginTool):
                     result = pipeline.sort_profile(
                         root, profile, api_key=override_key or None,
                         domain=domain, cache_dir=cache_dir,
-                        resolver=None, decisions=rules)
+                        resolver=None, decisions=rules, client=self._nexus())
                 except dag.CycleError as exc:
                     self._show_cycle(parent, exc)
                     return
@@ -230,7 +241,7 @@ class DagSorterTool(mobase.IPluginTool):
                     result = pipeline.sort_profile(
                         root, profile, api_key=override_key or None,
                         domain=domain, cache_dir=cache_dir,
-                        resolver=None, decisions=rules)
+                        resolver=None, decisions=rules, client=self._nexus())
                 except dag.CycleError as exc:
                     self._show_cycle(parent, exc)
                     return
@@ -271,7 +282,7 @@ class DagSorterTool(mobase.IPluginTool):
         try:
             result = pipeline.sort_profile(
                 root, profile, api_key=None, domain=domain,
-                cache_dir=cache_dir, resolver=None, decisions=rules)
+                cache_dir=cache_dir, resolver=None, decisions=rules, client=self._nexus())
         except (dag.CycleError, OSError):
             return                     # never block an install
 
@@ -285,7 +296,7 @@ class DagSorterTool(mobase.IPluginTool):
                         result = pipeline.sort_profile(
                             root, profile, api_key=None, domain=domain,
                             cache_dir=cache_dir, resolver=None,
-                            decisions=rules)
+                            decisions=rules, client=self._nexus())
                     except (dag.CycleError, OSError):
                         return
 
@@ -426,7 +437,7 @@ class DagSorterTool(mobase.IPluginTool):
                 domain=str(self._organizer.pluginSetting(
                     self.name(), "game_domain") or "skyrimspecialedition"),
                 cache_dir=self._organizer.pluginDataPath(),
-                resolver=None, decisions=self._rules())
+                resolver=None, decisions=self._rules(), client=self._nexus())
         except (dag.CycleError, OSError) as exc:
             QMessageBox.warning(QApplication.activeWindow(),
                                 self.tr("Freeze order"), str(exc))
@@ -485,7 +496,7 @@ class DagSorterTool(mobase.IPluginTool):
         try:
             result = pipeline.sort_profile(
                 root, profile, api_key=None, domain=domain,
-                cache_dir=cache_dir, resolver=None, decisions=rules)
+                cache_dir=cache_dir, resolver=None, decisions=rules, client=self._nexus())
         except (dag.CycleError, OSError) as exc:
             QMessageBox.warning(parent, self.tr("Auto-sort"), str(exc))
             return
@@ -501,7 +512,7 @@ class DagSorterTool(mobase.IPluginTool):
                         result = pipeline.sort_profile(
                             root, profile, api_key=None, domain=domain,
                             cache_dir=cache_dir, resolver=None,
-                            decisions=rules)
+                            decisions=rules, client=self._nexus())
                     except (dag.CycleError, OSError):
                         return
 

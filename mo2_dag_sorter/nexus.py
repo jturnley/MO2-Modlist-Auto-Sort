@@ -128,8 +128,28 @@ def _request(url: str, api_key: str):
     return payload, remaining
 
 
-def fetch_categories(domain: str, api_key: str) -> dict[int, str]:
+def _via_client(client, path: str):
+    """Ask the Extender, raising what this module's own loop expects.
+
+    The loop below was written around urllib's exceptions and is well
+    tested; translating here is smaller and safer than rewriting it to
+    understand a second error vocabulary.
+    """
+    try:
+        return client.rest(path)
+    except Exception as exc:
+        status = getattr(exc, "status", None)
+        if status:
+            raise urllib.error.HTTPError(path, status, str(exc), None, None)
+        raise urllib.error.URLError(str(exc))
+
+
+def fetch_categories(domain: str, api_key: str, client=None) -> dict[int, str]:
     """{category id: name} for a game, from /v1/games/{domain}.json."""
+    if client is not None and client.has_key:
+        # The Extender keeps this for thirty days - a category table
+        # changes about once a year.
+        return client.categories(domain)
     payload, _ = _request("{}/{}.json".format(API_ROOT, domain), api_key)
     out: dict[int, str] = {}
     for entry in payload.get("categories") or ():
@@ -140,9 +160,16 @@ def fetch_categories(domain: str, api_key: str) -> dict[int, str]:
     return out
 
 
-def _fetch(domain: str, mod_id: int, api_key: str) -> tuple[int | None, str]:
-    url = "{}/{}/mods/{}.json".format(API_ROOT, domain, mod_id)
-    payload, remaining = _request(url, api_key)
+def _fetch(domain: str, mod_id: int, api_key: str,
+           client=None) -> tuple[int | None, str]:
+    if client is not None:
+        payload = _via_client(
+            client, "games/{}/mods/{}.json".format(domain, mod_id))
+        remaining = client.remaining()
+        remaining = -1 if remaining is None else remaining
+    else:
+        url = "{}/{}/mods/{}.json".format(API_ROOT, domain, mod_id)
+        payload, remaining = _request(url, api_key)
     if 0 <= remaining < RESERVE:
         raise RateLimitLow(remaining)
     value = payload.get("category_id")
@@ -153,7 +180,8 @@ def _fetch(domain: str, mod_id: int, api_key: str) -> tuple[int | None, str]:
 
 def resolve(mod_ids, cache: NexusCache, api_key: str | None,
             domain: str = "skyrimspecialedition",
-            progress=None) -> tuple[dict[int, int], dict[int, str], str]:
+            progress=None,
+            client=None) -> tuple[dict[int, int], dict[int, str], str]:
     """({mod id: category id}, a one-line report of how it went).
 
     Returns whatever the cache already holds even when the network half never
@@ -161,14 +189,18 @@ def resolve(mod_ids, cache: NexusCache, api_key: str | None,
     online one for every mod seen before.
     """
     wanted = sorted({i for i in mod_ids if i})
-    if not api_key:
+    # The Extender's client carries a key of its own, so having one is
+    # enough even when nothing was passed in here.
+    if client is not None and not client.has_key:
+        client = None
+    if not api_key and client is None:
         return dict(cache.categories), dict(cache.category_names), (
             "no Nexus API key set - tiers from cache ({} mods) and file trees"
             .format(len(cache.categories)))
 
     if not cache.category_names:
         try:
-            cache.category_names = fetch_categories(domain, api_key)
+            cache.category_names = fetch_categories(domain, api_key, client)
             cache._dirty = bool(cache.category_names)
         except (urllib.error.URLError, OSError, ValueError, TimeoutError):
             pass
@@ -178,7 +210,7 @@ def resolve(mod_ids, cache: NexusCache, api_key: str | None,
     stopped = ""
     for n, mod_id in enumerate(todo):
         try:
-            cache.put(mod_id, *_fetch(domain, mod_id, api_key))
+            cache.put(mod_id, *_fetch(domain, mod_id, api_key, client))
             fetched += 1
         except RateLimitLow as exc:
             stopped = "only {} requests remain this hour".format(exc.args[0])

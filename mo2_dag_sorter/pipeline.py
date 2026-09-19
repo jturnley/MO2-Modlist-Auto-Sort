@@ -15,7 +15,7 @@ import os
 from dataclasses import dataclass
 
 from . import (dag, decisions as decisions_mod, duplicates, masters,
-               modlist, nexus,
+               modlist, nexus, nexus_api,
                requirements, scan, shadow, tiers, uncategorised)
 
 
@@ -53,7 +53,7 @@ def sort_profile(mo2_root: str, profile: str = "Default",
                  domain: str = "skyrimspecialedition",
                  cache_dir: str | None = None,
                  progress=None, resolver=None,
-                 decisions=None) -> SortResult:
+                 decisions=None, client=None) -> SortResult:
     """Run the whole sequence over one profile.
 
     ``resolver`` is an optional object with ``.resolve(ids)`` - inside MO2
@@ -61,6 +61,12 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     Nexus key instead of asking for a second copy of it. Without one, the
     direct HTTP path runs, which needs ``api_key`` and is what the offline
     command-line runner uses.
+
+    ``client`` is a Nexus client from the MO2 Nexus API Extender.  When one
+    is given, every Nexus call goes through it: one encrypted key and one
+    response cache shared with every other plugin, instead of a second copy
+    of each kept here.  Without one, this plugin's own transport runs, which
+    is what happened before the Extender existed.
     """
     mods_dir = os.path.join(mo2_root, "mods")
     list_path = os.path.join(mo2_root, "profiles", profile, "modlist.txt")
@@ -79,7 +85,7 @@ def sort_profile(mo2_root: str, profile: str = "Default",
         category_names = dict(cache.category_names)
     else:
         categories, category_names, nexus_report = nexus.resolve(
-            ids, cache, api_key, domain)
+            ids, cache, api_key, domain, client=client)
     # MO2 keeps the same id -> name table on disk, so the half of the tiering
     # that needs it works with no key and no network at all.
     if not category_names:
@@ -96,13 +102,17 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     needs: dict = {}
     req_cache = requirements.RequirementCache(
         os.path.join(cache_dir, "nexus_requirements.json"))
-    game = requirements.game_id(domain)
+    game = requirements.game_id(domain, client=client)
     if game:
-        needs, req_report = requirements.fetch(ids, req_cache, game, progress)
+        needs, req_report = requirements.fetch(ids, req_cache, game,
+                                              progress, client=client)
     else:
         needs, req_report = req_cache.needs, "requirements offline ({} cached)".format(
             len(req_cache.needs))
     nexus_report = "{}; {}".format(nexus_report, req_report)
+    # Whatever was fetched is worth keeping for the next run, and for
+    # whichever plugin asks about the same mods next.
+    nexus_api.finish(client)
 
     movable = [n for n in dag.sortable(nodes) if n.enabled]
     disabled = [n for n in dag.sortable(nodes) if not n.enabled]

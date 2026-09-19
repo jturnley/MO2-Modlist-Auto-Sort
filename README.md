@@ -70,7 +70,8 @@ mo2_dag_sorter/       the plugin - copy this folder into MO2/plugins/
   nexus.py            v1 metadata + cache    requirements.py  v2 GraphQL
   decisions.py        user_rules.json        backups.py       undo
   *_ui.py             the dialogs
-  vault_key.py        optional: borrow the shared key from the API Extender
+  nexus_api.py        every Nexus call, through the API Extender
+  vault_key.py        the shared key, when only the key is wanted
 tests/                run without MO2 or Qt
 tools/dag_sort_cli.py sort and report from the command line
 ```
@@ -89,12 +90,24 @@ Separators and unmanaged entries keep their exact line positions and the
 sorted mods are poured into the slots left over, so a run never disturbs your
 own headings.
 
-## Optional: shared Nexus key
+## Requires: MO2 Nexus API Extender
 
-If the **MO2 Nexus API Extender** is installed, the sorter borrows the key it
-holds rather than keeping one of its own in `ModOrganizer.ini`. Entirely
-optional — not installed is the normal case, and nothing here fails without
-it. Its own `nexus_api_key` setting still works and still wins if set.
+Every Nexus call this plugin makes goes through the
+[Nexus API Extender](https://github.com/jturnley/MO2-Nexus-API-Extender).
+That means one encrypted key and **one response cache** shared with your
+other plugins, rather than a second copy of each kept here: a mod this
+sorter looked up is already paid for when something else asks about it, and
+a second scan does not re-ask Nexus for what has not changed.
+
+It is listed as a requirement rather than an optional extra. But a
+requirement is a thing people skip, so nothing here fails without it - the
+plugin falls back to its own connection, and the report says which one it
+used. What you lose is the shared cache and the encrypted key.
+
+**A key is not required.** Mod requirements come from v2 GraphQL, which needs
+no credential, so they resolve for everyone. A key is what lets the tiering
+look up a game's category table on v1 when MO2's own connection is
+unavailable.
 
 ## Install
 

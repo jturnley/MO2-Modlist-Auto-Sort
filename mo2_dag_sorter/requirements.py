@@ -36,7 +36,23 @@ BATCH = 20                      # mods per request; the server accepts aliases
 USER_AGENT = "MO2-DAG-Sorter/1.0"
 
 
-def _post(query: str, timeout: int = 30) -> dict:
+def _post(query: str, timeout: int = 30, client=None) -> dict:
+    """One GraphQL call, through the Extender when it is there.
+
+    v2 needs no credential for these queries, so this path works whether
+    or not a key is stored - what the Extender adds is one shared cache
+    instead of a second private one.
+    """
+    if client is not None:
+        try:
+            return {"data": client.graphql(query)}
+        except Exception as exc:
+            # Match what the callers below already handle.
+            raise urllib.error.URLError(str(exc))
+    return _post_direct(query, timeout)
+
+
+def _post_direct(query: str, timeout: int = 30) -> dict:
     body = json.dumps({"query": query}).encode("utf-8")
     req = urllib.request.Request(
         ENDPOINT, data=body,
@@ -47,7 +63,12 @@ def _post(query: str, timeout: int = 30) -> dict:
         return json.load(fh)
 
 
-def game_id(domain: str) -> int | None:
+def game_id(domain: str, client=None) -> int | None:
+    if client is not None:
+        try:
+            return client.game_id(domain)
+        except Exception:
+            return None
     try:
         payload = _post('{{ game(domainName: "{}") {{ id }} }}'.format(domain))
     except (urllib.error.URLError, OSError, ValueError, TimeoutError):
@@ -86,7 +107,7 @@ class RequirementCache:
 
 
 def fetch(mod_ids, cache: RequirementCache, game: int,
-          progress=None) -> tuple[dict[int, list], str]:
+          progress=None, client=None) -> tuple[dict[int, list], str]:
     """Fill the cache for any id it does not hold. Returns (needs, report).
 
     Offline is not an error: whatever the cache already knows is returned and
@@ -107,7 +128,7 @@ def fetch(mod_ids, cache: RequirementCache, game: int,
                 mod, game)
             for mod in chunk))
         try:
-            data = (_post(query).get("data") or {})
+            data = (_post(query, client=client).get("data") or {})
         except (urllib.error.URLError, OSError, ValueError, TimeoutError):
             break
         for mod in chunk:

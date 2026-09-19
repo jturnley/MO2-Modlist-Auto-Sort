@@ -8,7 +8,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mo2_dag_sorter import backups, dag, pipeline
+from mo2_dag_sorter import backups, dag, nexus_api, pipeline
 
 
 def _backups(list_path, args) -> int:
@@ -55,8 +55,10 @@ def main() -> int:
         if args.backups or args.undo or args.restore:
             return _backups(list_path, args)
 
-        result = pipeline.sort_profile(args.root, args.profile,
-                                       api_key=args.api_key or None)
+        cache_dir = os.path.join(args.root, "plugins", "data")
+        result = pipeline.sort_profile(
+            args.root, args.profile, api_key=args.api_key or None,
+            client=nexus_api.connect_offline(cache_dir, args.api_key))
     except dag.CycleError as exc:
         print("CYCLE among {} mods:".format(len(exc.nodes)))
         for edge in exc.edges[:40]:
