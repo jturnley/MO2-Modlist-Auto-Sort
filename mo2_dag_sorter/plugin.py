@@ -20,7 +20,7 @@ from . import (backups, category_ui, context_menu, dag,
                key_ui, nexus_api, resolve_ui, restore_ui, stacks,
                vault_key)
 
-VERSION = mobase.VersionInfo(0, 9, 3, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 9, 4, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 
 

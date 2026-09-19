@@ -1002,6 +1002,78 @@ check("and that name is the one users see",
       _vk.REQUESTER, "MO2 Modlist Auto Sort")
 
 
+# -- one bad batch must not abandon the rest of the sweep -----------------
+# This is the bug that cost 380 of 740 mods twice: the loop caught the
+# first failure and broke, so a single failed request 19 batches in threw
+# away everything after it, and the report said only "0 looked up".
+
+class _FlakyClient:
+    """Fails the nth batch, answers everything else with empty results."""
+
+    def __init__(self, fail_on=(), boom="Nexus rejected the query: nope"):
+        self.fail_on = set(fail_on)
+        self.boom = boom
+        self.calls = 0
+
+    def graphql(self, query, variables=None):
+        self.calls += 1
+        if self.calls in self.fail_on:
+            raise RuntimeError(self.boom)
+        import re as _re
+        return {alias: {"modRequirements": {"nexusRequirements":
+                                            {"nodes": []}}}
+                for alias in _re.findall(r"m(?:\d+)(?=:)", query)}
+
+
+with _tempfile.TemporaryDirectory() as _folder:
+    _rp = os.path.join(_folder, "nexus_requirements.json")
+
+    # Five batches' worth; the second one fails.
+    _ids = list(range(1000, 1000 + _requirements.BATCH * 5))
+    _c = _requirements.RequirementCache(_rp)
+    _flaky = _FlakyClient(fail_on=(2,))
+    _needs, _report = _requirements.fetch(_ids, _c, 1704, client=_flaky)
+    check("a failed batch does not stop the ones after it",
+          _flaky.calls, 5)
+    check("every other batch is still recorded",
+          len(_c.needs), _requirements.BATCH * 4)
+    check("the skipped batch is left stale for next time",
+          _c.stale(_ids[_requirements.BATCH]), True)
+    check("and the report says how many were missed",
+          "{} not looked up".format(_requirements.BATCH) in _report, True)
+    check("and says why, in the words Nexus used",
+          "nope" in _report, True)
+
+    # A dead endpoint should give up quickly rather than grind through
+    # every batch waiting for one to work.
+    _c2 = _requirements.RequirementCache(os.path.join(_folder, "b.json"))
+    _dead = _FlakyClient(fail_on=range(1, 99), boom="URLError: unreachable")
+    _needs2, _report2 = _requirements.fetch(_ids, _c2, 1704, client=_dead)
+    check("a dead endpoint stops after GIVE_UP batches",
+          _dead.calls, _requirements.GIVE_UP)
+    check("nothing is recorded from it", len(_c2.needs), 0)
+    check("and the reason still reaches the report",
+          "unreachable" in _report2, True)
+
+    # The counter is consecutive, not cumulative: scattered failures on a
+    # long list must not add up to a give-up.
+    _c3 = _requirements.RequirementCache(os.path.join(_folder, "c.json"))
+    _spotty = _FlakyClient(fail_on=(1, 3, 5))
+    _requirements.fetch(_ids, _c3, 1704, client=_spotty)
+    check("scattered failures do not accumulate into a give-up",
+          _spotty.calls, 5)
+
+    # The real exception type must survive far enough to be described.
+    try:
+        _requirements._post("{ x }", client=_FlakyClient(fail_on=(1,),
+                                                         boom="kaboom"))
+    except _requirements.Unavailable as _exc:
+        check("_post keeps the reason a batch failed",
+              "kaboom" in str(_exc) and "RuntimeError" in str(_exc), True)
+    else:
+        check("_post keeps the reason a batch failed", "no raise", True)
+
+
 if failures:
     print("FAILED")
     for f in failures:

@@ -33,8 +33,19 @@ import urllib.request
 
 ENDPOINT = "https://api.nexusmods.com/v2/graphql"
 BATCH = 20                      # mods per request; the server accepts aliases
+GIVE_UP = 3                     # consecutive failed batches before stopping
 MAX_AGE = 7 * 86400.0           # how long a stored answer is trusted
 USER_AGENT = "MO2-DAG-Sorter/1.0"
+
+
+class Unavailable(Exception):
+    """A batch did not come back. Carries why, in words a user can read.
+
+    This used to be flattened into `URLError(str(exc))`, which the fetch
+    loop caught alongside genuine network errors and turned into a silent
+    stop. The reason never reached the report, so a sweep that fetched
+    nothing looked exactly like a sweep that had nothing to fetch.
+    """
 
 
 def _post(query: str, timeout: int = 30, client=None) -> dict:
@@ -48,9 +59,11 @@ def _post(query: str, timeout: int = 30, client=None) -> dict:
         try:
             return {"data": client.graphql(query)}
         except Exception as exc:
-            # Match what the callers below already handle.
-            raise urllib.error.URLError(str(exc))
-    return _post_direct(query, timeout)
+            raise Unavailable("{}: {}".format(type(exc).__name__, exc))
+    try:
+        return _post_direct(query, timeout)
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
+        raise Unavailable("{}: {}".format(type(exc).__name__, exc))
 
 
 def _post_direct(query: str, timeout: int = 30) -> dict:
@@ -182,6 +195,8 @@ def fetch(mod_ids, cache: RequirementCache, game: int,
             len(cache.needs))
 
     asked = 0
+    failures = 0                # consecutive, reset by any batch that works
+    reason = ""                 # the first failure's explanation, for the report
     for start in range(0, len(missing), BATCH):
         chunk = missing[start:start + BATCH]
         query = "{{ {} }}".format(" ".join(
@@ -191,8 +206,19 @@ def fetch(mod_ids, cache: RequirementCache, game: int,
             for mod in chunk))
         try:
             data = (_post(query, client=client).get("data") or {})
-        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
-            break
+        except Unavailable as exc:
+            # One bad batch is not a reason to abandon the other 300. It
+            # was: the first failure broke the loop, so a single hiccup
+            # 19 batches in cost the whole rest of the sweep and said
+            # nothing about why. Keep going, and give up only once it is
+            # clear the whole endpoint is gone rather than one request.
+            failures += 1
+            reason = reason or str(exc)
+            if failures >= GIVE_UP:
+                break
+            time.sleep(0.2)
+            continue
+        failures = 0
         for mod in chunk:
             entry = data.get("m{}".format(mod))
             if entry is None:
@@ -211,4 +237,8 @@ def fetch(mod_ids, cache: RequirementCache, game: int,
         asked, len(cache.needs))
     if aged:
         report += " ({} re-checked after a week)".format(aged)
+    if reason:
+        short = reason if len(reason) <= 120 else reason[:117] + "..."
+        missed = len(missing) - asked
+        report += "; {} not looked up - {}".format(missed, short)
     return cache.needs, report
