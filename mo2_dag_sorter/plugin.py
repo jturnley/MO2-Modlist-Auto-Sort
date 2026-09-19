@@ -19,7 +19,7 @@ from . import (backups, category_ui, context_menu, dag,
                incremental, modlist, nexus, nexus_bridge, pipeline,
                key_ui, resolve_ui, restore_ui, stacks, vault_key)
 
-VERSION = mobase.VersionInfo(1, 0, 0, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 9, 0, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 
 
