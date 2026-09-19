@@ -20,7 +20,7 @@ from . import (backups, category_ui, context_menu, dag,
                key_ui, nexus_api, resolve_ui, restore_ui, stacks,
                vault_key)
 
-VERSION = mobase.VersionInfo(0, 9, 1, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 9, 2, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 
 
@@ -750,6 +750,14 @@ class DagKeyTool(mobase.IPluginTool):
     because the key is only ever reached for when MO2's own connection has
     already failed - which is exactly when a silent second failure is
     hardest to tell apart from the first.
+
+    **This tool hides itself when the Nexus API Extender is installed.**
+    The Extender presents an entry by the same name, and two of those in
+    one menu is worse than either alone: neither says which is which, and
+    the one a user picks decides whether their key lands in an encrypted
+    file or in plain text in ModOrganizer.ini. The Extender owns the key
+    when it is there. This is the fallback for someone who skipped the
+    requirement, so it steps aside rather than competing.
     """
 
     def __init__(self) -> None:
@@ -758,7 +766,11 @@ class DagKeyTool(mobase.IPluginTool):
 
     def init(self, organizer: mobase.IOrganizer) -> bool:
         self._organizer = organizer
-        return True
+        # Returning False leaves this tool unregistered, which is how a
+        # plugin says "not applicable here". A key already typed into this
+        # plugin's setting is not stranded by it: the Extender's dialog
+        # offers to take that copy over and blank it.
+        return not nexus_api.installed()
 
     def name(self) -> str:
         return "MO2 DAG Sorter - Nexus Key"

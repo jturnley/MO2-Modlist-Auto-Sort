@@ -968,6 +968,23 @@ with _tempfile.TemporaryDirectory() as _folder:
     check("forget drops the stamp", 55 in _r2.fetched, False)
 
 
+# -- only one plugin may claim the "Nexus API Key" menu entry -------------
+# plugin.py cannot be imported here (it needs mobase and PyQt6), so this
+# reads the source. Worth the brittleness: two tools with one name put
+# both in a submenu where neither says which is which, and the one a user
+# picks decides whether their key is encrypted or written to the ini in
+# plain text. That regressed once already.
+
+_plugin_src = io.open(
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "mo2_dag_sorter", "plugin.py"), encoding="utf-8").read()
+_key_tool = _plugin_src[_plugin_src.index("class DagKeyTool"):]
+check("the sorter's key tool still claims that name",
+      'return self.tr("Nexus API Key")' in _key_tool, True)
+check("but stands down when the Extender is installed",
+      "return not nexus_api.installed()" in _key_tool, True)
+
+
 if failures:
     print("FAILED")
     for f in failures:

@@ -130,6 +130,12 @@ requirement is a thing people skip, so nothing here fails without it - the
 plugin falls back to its own connection, and the report says which one it
 used. What you lose is the shared cache and the protected key.
 
+With the Extender installed, **Tools → Nexus API Key** is the Extender's
+dialog and this plugin does not add a second one of its own. Its own key
+dialog only appears when the Extender is absent, so there is never a choice
+between two identically named entries where one writes to an encrypted file
+and the other to plain text in `ModOrganizer.ini`.
+
 **A key is not required.** Mod requirements come from v2 GraphQL, which needs
 no credential, so they resolve for everyone. A key is what lets the tiering
 look up a game's category table on v1 when MO2's own connection is
