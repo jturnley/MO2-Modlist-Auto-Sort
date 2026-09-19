@@ -493,10 +493,20 @@ class DagSorterTool(mobase.IPluginTool):
             self.name(), "game_domain") or "skyrimspecialedition")
         cache_dir = self._organizer.pluginDataPath()
         rules = self._rules()
+        # The user pointed at these mods and asked about them, so their
+        # Nexus data is re-fetched rather than served from cache - a
+        # requirement added since the last sweep is exactly the thing
+        # they are likely to be chasing. Everything else in the graph
+        # still comes from cache: the whole list has to be walked to
+        # place one mod correctly, and re-asking about all of it would
+        # spend hundreds of requests to answer a question about three.
+        client = self._nexus()
         try:
-            result = pipeline.sort_profile(
-                root, profile, api_key=None, domain=domain,
-                cache_dir=cache_dir, resolver=None, decisions=rules, client=self._nexus())
+            with nexus_api.refreshing(client):
+                result = pipeline.sort_profile(
+                    root, profile, api_key=None, domain=domain,
+                    cache_dir=cache_dir, resolver=None, decisions=rules,
+                    client=client, refresh=names)
         except (dag.CycleError, OSError) as exc:
             QMessageBox.warning(parent, self.tr("Auto-sort"), str(exc))
             return
@@ -509,10 +519,12 @@ class DagSorterTool(mobase.IPluginTool):
             if dialog.exec() == resolve_ui.ResolveDialog.DialogCode.Accepted:
                 if dialog.apply_to_decisions():
                     try:
+                        # No refresh this time: the run above already
+                        # fetched these, and the answers are now in cache.
                         result = pipeline.sort_profile(
                             root, profile, api_key=None, domain=domain,
                             cache_dir=cache_dir, resolver=None,
-                            decisions=rules, client=self._nexus())
+                            decisions=rules, client=client)
                     except (dag.CycleError, OSError):
                         return
 

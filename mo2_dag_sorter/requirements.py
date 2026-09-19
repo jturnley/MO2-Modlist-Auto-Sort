@@ -96,6 +96,15 @@ class RequirementCache:
         except (OSError, ValueError, TypeError):
             pass
 
+    def forget(self, mod_id: int) -> None:
+        """Drop one mod's requirements, so they are fetched again.
+
+        Requirements are the half of the data an author edits after
+        release, so this is the entry most worth being able to re-ask
+        for.
+        """
+        self.needs.pop(mod_id, None)
+
     def save(self) -> None:
         try:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)

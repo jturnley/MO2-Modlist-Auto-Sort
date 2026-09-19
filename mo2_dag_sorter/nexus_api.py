@@ -20,6 +20,8 @@ it.  Only the v1 category lookup needs one.
 
 from __future__ import annotations
 
+import contextlib
+
 REQUESTER = "MO2 Modlist Auto Sort"
 
 
@@ -66,6 +68,25 @@ def connect_offline(cache_dir: str, api_key: str | None = None):
                                cache=api.Cache(path))
     except Exception:
         return None
+
+
+def refreshing(client):
+    """Ignore cached Nexus answers for the duration of a block.
+
+    Used for the right-click sort, where the user has pointed at some
+    mods and asked about *those* - an explicit request deserves a current
+    answer, while a full sweep is better served fast from cache.
+
+    Returns a do-nothing context when there is no Extender, or when it
+    predates refreshing(), so an older Extender degrades to cached
+    answers instead of breaking the menu.
+    """
+    if client is None or not hasattr(client, "refreshing"):
+        return contextlib.nullcontext()
+    try:
+        return client.refreshing()
+    except Exception:
+        return contextlib.nullcontext()
 
 
 def finish(client) -> None:

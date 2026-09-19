@@ -48,12 +48,27 @@ def _reassemble(original: list, ordered: list) -> list:
     return out
 
 
+def _stale_ids(refresh, nodes) -> set:
+    """Nexus ids for the named mods, for the caches keyed by id.
+
+    Matched on name because that is what the mod list hands us; a mod
+    with no Nexus id has nothing cached to throw away, so it drops out
+    here rather than being special-cased later.
+    """
+    wanted = {str(n).strip().lower() for n in (refresh or ()) if str(n).strip()}
+    if not wanted:
+        return set()
+    return {n.nexus_id for n in nodes
+            if n.nexus_id and n.name.strip().lower() in wanted}
+
+
 def sort_profile(mo2_root: str, profile: str = "Default",
                  api_key: str | None = None,
                  domain: str = "skyrimspecialedition",
                  cache_dir: str | None = None,
                  progress=None, resolver=None,
-                 decisions=None, client=None) -> SortResult:
+                 decisions=None, client=None,
+                 refresh=()) -> SortResult:
     """Run the whole sequence over one profile.
 
     ``resolver`` is an optional object with ``.resolve(ids)`` - inside MO2
@@ -67,6 +82,18 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     response cache shared with every other plugin, instead of a second copy
     of each kept here.  Without one, this plugin's own transport runs, which
     is what happened before the Extender existed.
+
+    ``refresh`` is a list of mod names whose cached Nexus data should be
+    thrown away and fetched again.  It is scoped to those mods on purpose:
+    the right-click sort still builds the whole graph, because placing one
+    mod correctly means knowing what everything else is, and refreshing
+    every mod in that graph would ask Nexus for hundreds of records it
+    already had.  The user pointed at a few mods, so a few are re-asked.
+
+    This clears the two caches kept here.  The Extender keeps its own,
+    shared with other plugins, which sits behind these - so a caller
+    wanting genuinely fresh data should also wrap the call in
+    ``nexus_api.refreshing(client)``, which is what the plugin does.
     """
     mods_dir = os.path.join(mo2_root, "mods")
     list_path = os.path.join(mo2_root, "profiles", profile, "modlist.txt")
@@ -80,6 +107,9 @@ def sort_profile(mo2_root: str, profile: str = "Default",
 
     cache = nexus.NexusCache(os.path.join(cache_dir, "nexus_cache.json"))
     ids = [n.nexus_id for n in nodes if n.nexus_id]
+    stale = _stale_ids(refresh, nodes)
+    for mod_id in stale:
+        cache.forget(mod_id)
     if resolver is not None:                                      # [4]
         categories, nexus_report = resolver.resolve(ids)
         category_names = dict(cache.category_names)
@@ -102,6 +132,8 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     needs: dict = {}
     req_cache = requirements.RequirementCache(
         os.path.join(cache_dir, "nexus_requirements.json"))
+    for mod_id in stale:
+        req_cache.forget(mod_id)
     game = requirements.game_id(domain, client=client)
     if game:
         needs, req_report = requirements.fetch(ids, req_cache, game,

@@ -113,6 +113,21 @@ class NexusCache:
     def known(self, mod_id: int) -> bool:
         return mod_id in self.categories or mod_id in self.misses
 
+    def forget(self, mod_id: int) -> None:
+        """Drop one mod, so the next resolve asks Nexus about it again.
+
+        For a user who has explicitly asked for these mods to be looked
+        at, rather than a sweep that merely needs an answer. Dropping a
+        miss matters as much as dropping a hit: a mod that 404'd because
+        its page was briefly unavailable would otherwise stay written off
+        until the cache expires.
+        """
+        if mod_id in self.categories or mod_id in self.misses:
+            self.categories.pop(mod_id, None)
+            self.names.pop(mod_id, None)
+            self.misses.discard(mod_id)
+            self._dirty = True
+
 
 def _request(url: str, api_key: str):
     """(payload, hourly requests remaining). -1 when the header is absent."""

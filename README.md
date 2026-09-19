@@ -99,6 +99,21 @@ other plugins, rather than a second copy of each kept here: a mod this
 sorter looked up is already paid for when something else asks about it, and
 a second scan does not re-ask Nexus for what has not changed.
 
+### Cached, except when you ask
+
+A full sort is served from cache wherever it can be: it is walking hundreds
+of mods and almost none of them changed since yesterday.
+
+**The right-click sort re-asks Nexus about the mods you selected**, and only
+those. If you picked a mod because its requirements look wrong, a cached
+answer is the one thing that cannot help you. Whatever comes back replaces
+the cached copy, so the next full sort has it too.
+
+The rest of the graph still comes from cache during that run. Placing one mod
+correctly means knowing what everything else is, so the whole list is walked
+either way — re-asking about all of it would spend hundreds of requests to
+answer a question about three.
+
 It is listed as a requirement rather than an optional extra. But a
 requirement is a thing people skip, so nothing here fails without it - the
 plugin falls back to its own connection, and the report says which one it

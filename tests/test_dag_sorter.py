@@ -842,6 +842,88 @@ except Exception:
     check("a networkless client becomes a URLError", False, True)
 
 
+# -- bypassing the cache for mods the user actually pointed at ------------
+
+import contextlib as _contextlib
+import tempfile as _tempfile
+from mo2_dag_sorter import pipeline as _pipeline
+from mo2_dag_sorter import requirements as _requirements
+
+with _tempfile.TemporaryDirectory() as _folder:
+    _path = os.path.join(_folder, "nexus_cache.json")
+    _c = _nexus.NexusCache(_path)
+    _c.put(101, 22, "A mod")
+    _c.put(202, None)                           # a 404
+    check("cache remembers both", _c.known(101) and _c.known(202), True)
+    _c.forget(101)
+    _c.forget(202)
+    check("forget drops a hit", _c.known(101), False)
+    # A mod written off as missing must be re-askable too, or a page that
+    # was briefly unavailable stays written off until the cache expires.
+    check("forget drops a miss", _c.known(202), False)
+    _c.save()
+    check("forget survives a save", _nexus.NexusCache(_path).known(101), False)
+
+    _r = _requirements.RequirementCache(
+        os.path.join(_folder, "nexus_requirements.json"))
+    _r.needs[101] = [(5, "needs this")]
+    _r.forget(101)
+    check("requirements forgotten", 101 in _r.needs, False)
+    _r.forget(999)                              # absent is not an error
+    check("forgetting what is absent is fine", True, True)
+
+# The right-click sort walks the whole graph but must only re-ask about the
+# selection. If this ever widens, a three-mod sort costs hundreds of requests.
+_nodes = [ModNode(name="Alpha", prefix="+", original_index=0, nexus_id=11),
+          ModNode(name="Beta", prefix="+", original_index=1, nexus_id=22),
+          ModNode(name="Gamma", prefix="+", original_index=2)]
+check("refresh takes just the named mod",
+      _pipeline._stale_ids(["Alpha"], _nodes), {11})
+check("refresh matches names case-insensitively",
+      _pipeline._stale_ids(["alpha", "BETA"], _nodes), {11, 22})
+check("a full sweep refreshes nothing",
+      _pipeline._stale_ids([], _nodes), set())
+check("no refresh argument refreshes nothing",
+      _pipeline._stale_ids(None, _nodes), set())
+check("a mod with no nexus id has nothing to drop",
+      _pipeline._stale_ids(["Gamma"], _nodes), set())
+check("an unknown name is not an error",
+      _pipeline._stale_ids(["Nope"], _nodes), set())
+
+# The Extender is a requirement, but users skip requirements - and one
+# predating refreshing() must not break the right-click menu.
+with nexus_api.refreshing(None):
+    check("refreshing without an Extender is fine", True, True)
+
+
+class _OlderExtender:
+    pass
+
+
+with nexus_api.refreshing(_OlderExtender()):
+    check("refreshing with an older Extender is fine", True, True)
+
+
+class _RealClient:
+    def __init__(self):
+        self.on = False
+
+    @_contextlib.contextmanager
+    def refreshing(self):
+        self.on = True
+        try:
+            yield self
+        finally:
+            self.on = False
+
+
+_live = _RealClient()
+with nexus_api.refreshing(_live):
+    check("a real client is switched on", _live.on, True)
+check("and switched off afterwards", _live.on, False)
+
+
+
 if failures:
     print("FAILED")
     for f in failures:
