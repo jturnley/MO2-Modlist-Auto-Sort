@@ -978,11 +978,28 @@ with _tempfile.TemporaryDirectory() as _folder:
 _plugin_src = io.open(
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                  "mo2_dag_sorter", "plugin.py"), encoding="utf-8").read()
-_key_tool = _plugin_src[_plugin_src.index("class DagKeyTool"):]
+_key_tool = _plugin_src[_plugin_src.index("class DagKeyTool"):
+                        _plugin_src.index("def create_plugins")]
+_create = _plugin_src[_plugin_src.index("def create_plugins"):]
 check("the sorter's key tool still claims that name",
       'return self.tr("Nexus API Key")' in _key_tool, True)
 check("but stands down when the Extender is installed",
-      "return not nexus_api.installed()" in _key_tool, True)
+      "if not nexus_api.installed():" in _create
+      and "tools.append(DagKeyTool())" in _create, True)
+# Standing down must be quiet. An init() returning False unregisters the
+# tool, but MO2 then logs the whole package as failed to load on every
+# launch - which is how the last attempt at this read to a user.
+check("and does so without failing to initialise",
+      "return not nexus_api.installed()" in _plugin_src, False)
+check("the other two tools are always offered",
+      "tools = [DagSorterTool(), DagRestoreTool()]" in _create, True)
+
+# -- one plugin, one row in the vault's caller list ----------------------
+from mo2_dag_sorter import nexus_api as _na, vault_key as _vk
+check("the sorter asks the vault under a single name",
+      _na.REQUESTER, _vk.REQUESTER)
+check("and that name is the one users see",
+      _vk.REQUESTER, "MO2 Modlist Auto Sort")
 
 
 if failures:

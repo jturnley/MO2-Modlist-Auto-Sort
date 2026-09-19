@@ -13,7 +13,12 @@ blank it, which is the path out of storing a credential in the ini.
 
 from __future__ import annotations
 
-REQUESTER = "MO2 DAG Sorter"
+# The name the vault's dialog shows for this plugin. Shared with
+# `nexus_api`, which asks the same vault for a client: this plugin is one
+# caller, so it gets one row in that list and one allow/deny switch. Two
+# names for one plugin would mean denying one and leaving the other
+# working, which reads as the deny not having taken.
+REQUESTER = "MO2 Modlist Auto Sort"
 
 
 def key(organizer) -> str:

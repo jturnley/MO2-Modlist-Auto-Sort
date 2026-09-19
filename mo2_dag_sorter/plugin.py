@@ -20,7 +20,7 @@ from . import (backups, category_ui, context_menu, dag,
                key_ui, nexus_api, resolve_ui, restore_ui, stacks,
                vault_key)
 
-VERSION = mobase.VersionInfo(0, 9, 2, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 9, 3, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 
 
@@ -751,7 +751,8 @@ class DagKeyTool(mobase.IPluginTool):
     already failed - which is exactly when a silent second failure is
     hardest to tell apart from the first.
 
-    **This tool hides itself when the Nexus API Extender is installed.**
+    **This tool is not registered when the Nexus API Extender is
+    installed** - see `create_plugins`.
     The Extender presents an entry by the same name, and two of those in
     one menu is worse than either alone: neither says which is which, and
     the one a user picks decides whether their key lands in an encrypted
@@ -766,11 +767,7 @@ class DagKeyTool(mobase.IPluginTool):
 
     def init(self, organizer: mobase.IOrganizer) -> bool:
         self._organizer = organizer
-        # Returning False leaves this tool unregistered, which is how a
-        # plugin says "not applicable here". A key already typed into this
-        # plugin's setting is not stranded by it: the Extender's dialog
-        # offers to take that copy over and blank it.
-        return not nexus_api.installed()
+        return True
 
     def name(self) -> str:
         return "MO2 DAG Sorter - Nexus Key"
@@ -830,4 +827,24 @@ class DagKeyTool(mobase.IPluginTool):
 
 
 def create_plugins():
-    return [DagSorterTool(), DagRestoreTool(), DagKeyTool()]
+    """The tools MO2 should register, decided before it asks.
+
+    `DagKeyTool` is left out when the Extender is installed, because the
+    Extender presents an entry by the same name and two of those in one
+    menu is worse than either alone.
+
+    Deciding it here rather than in `DagKeyTool.init` is deliberate. A
+    tool returning False from `init` is unregistered, but MO2 reports it
+    as a plugin that failed to initialise and then logs the whole package
+    as failed to load - which looks like a broken install to anyone who
+    reads the log, on every launch, for a case that is working exactly as
+    intended. Not offering the tool says the same thing quietly.
+
+    A key already typed into this plugin's setting is not stranded by
+    this: the Extender's dialog offers to take that copy over and blank
+    it.
+    """
+    tools = [DagSorterTool(), DagRestoreTool()]
+    if not nexus_api.installed():
+        tools.append(DagKeyTool())
+    return tools

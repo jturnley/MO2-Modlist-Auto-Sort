@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import contextlib
 
-REQUESTER = "MO2 Modlist Auto Sort"
+# One name per plugin - see the note on the definition.
+from .vault_key import REQUESTER  # noqa: F401
 
 
 def installed() -> bool:
