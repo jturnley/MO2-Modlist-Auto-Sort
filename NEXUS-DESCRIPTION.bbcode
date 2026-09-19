@@ -1,0 +1,81 @@
+[size=5][b]MO2 Modlist Auto Sort[/b][/size]
+
+[b]Sorts your left pane into a working order — and shows you what it changed, and why, before anything moves.[/b]
+
+[line]
+
+[size=4][b]What it does[/b][/size]
+
+LOOT sorts your [i]plugins[/i] — the right pane, your ESPs. Nothing sorts your [i]mods[/i] — the left pane, where the actual files win or lose. That is done by hand, by dragging, using knowledge you either have or do not.
+
+This plugin does that pass for you. It reads your mod list, works out what belongs above what, and reorders it.
+
+Then — and this is the part that matters — it [b]tells you what it did[/b]. Every move, with the reason behind it, and the option to say no.
+
+[line]
+
+[size=4][b]How it decides[/b][/size]
+
+[list]
+[*][b]What kind of mod it is.[/b] Textures, meshes, animations, patches and so on each have a place in the stack. Fixes go near the bottom so they land on top of what they fix.
+[*][b]What mods say they need.[/b] It reads the Requirements list off each mod's Nexus page. If A requires B, that is a real relationship and it is used as one.
+[*][b]What actually collides.[/b] It looks at which mods overwrite the same files, because two mods that never touch each other do not need an opinion about their order.
+[*][b]What you already decided.[/b] Your own choices are remembered and are never quietly overruled on a later sort.
+[/list]
+
+[line]
+
+[size=4][b]It will not surprise you[/b][/size]
+
+[list]
+[*][b]Nothing moves without a backup.[/b] Every sort writes a restorable snapshot first.
+[*][b]Tools → Undo / Restore Mod List[/b] puts the previous order back.
+[*][b]Conflicts it cannot settle are brought to you[/b] rather than guessed at.
+[*][b]"The list is already in order"[/b] is a perfectly normal result. It does not move things to look busy.
+[/list]
+
+[line]
+
+[size=4][b]Requirements[/b][/size]
+
+[b][url=https://www.nexusmods.com/site/mods/]MO2 Nexus API Extender[/url][/b] — this is how the sorter reads mod requirements from Nexus without asking you for a key of its own.
+
+Without it the sorter still works, using its own connection, and the report tells you which one it used. What you lose is the shared cache and the protected key.
+
+[line]
+
+[size=4][b]Install[/b][/size]
+
+[list=1]
+[*]Install the MO2 Nexus API Extender first.
+[*]Download this archive.
+[*]Extract it into your Mod Organizer 2 [b]plugins[/b] folder, so that a folder called [b]mo2_dag_sorter[/b] sits alongside the other plugins.
+[*]Restart MO2.
+[*][b]Tools → Auto-Sort Left Pane[/b].
+[/list]
+
+Right-clicking a selection of mods sorts [i]just those[/i], and re-checks them against Nexus rather than trusting what it already had.
+
+[line]
+
+[size=4][b]Read this before your first sort[/b][/size]
+
+[b]This is beta software that reorders your mod list.[/b] It backs up first and it can undo, but a mod list represents real hours of your life. Do a sort when you have time to look at the report properly, not five minutes before you wanted to play.
+
+The first sort on a large list takes a while — it is asking Nexus about several hundred mods. After that the answers are cached and it is quick. Requirements are re-checked once a week, because that is the part of a mod page authors actually edit after release.
+
+[line]
+
+[size=4][b]Honest limits[/b][/size]
+
+[list]
+[*][b]Requirements are not load order.[/b] A mod requiring another tells you it must be installed, not that it must lose to it. The sorter treats it as one signal among several, not as the answer.
+[*][b]Some requirements are invisible to it.[/b] Mods that list requirements per-file rather than per-mod return nothing through the API, so those relationships are not seen.
+[*][b]It does not know your intentions.[/b] If you deliberately put a mod somewhere odd, tell it once and it will remember.
+[/list]
+
+[line]
+
+[size=4][b]Source[/b][/size]
+
+[url=https://github.com/jturnley/MO2-Modlist-Auto-Sort]github.com/jturnley/MO2-Modlist-Auto-Sort[/url]
