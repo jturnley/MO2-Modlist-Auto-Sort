@@ -109,6 +109,17 @@ those. If you picked a mod because its requirements look wrong, a cached
 answer is the one thing that cannot help you. Whatever comes back replaces
 the cached copy, so the next full sort has it too.
 
+**Requirements older than a week are re-asked on a full sort.** Requirements
+are the part of a mod page an author edits after release — a patch is added,
+a dependency is dropped — and nothing in the API says when that last
+happened, so the only question available is the whole question. It is one
+batched request per twenty mods, over v2, which needs no key and bills
+against a different quota from everything else here. Tiers are not aged:
+a mod's category is set once and essentially never changes.
+
+The first sort after upgrading to 0.9.1 re-checks everything, because
+entries written by earlier versions carry no timestamp and could be any age.
+
 The rest of the graph still comes from cache during that run. Placing one mod
 correctly means knowing what everything else is, so the whole list is walked
 either way — re-asking about all of it would spend hundreds of requests to

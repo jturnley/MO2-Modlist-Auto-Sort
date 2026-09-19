@@ -1,5 +1,6 @@
 """Engine tests for MO2-DAG-Sorter. Run directly: python tests/test_dag_sorter.py"""
 
+import io
 import os
 import pathlib
 import sys
@@ -844,6 +845,7 @@ except Exception:
 
 # -- bypassing the cache for mods the user actually pointed at ------------
 
+import io as _io_unused  # noqa: F401
 import contextlib as _contextlib
 import tempfile as _tempfile
 from mo2_dag_sorter import pipeline as _pipeline
@@ -922,6 +924,48 @@ with nexus_api.refreshing(_live):
     check("a real client is switched on", _live.on, True)
 check("and switched off afterwards", _live.on, False)
 
+
+
+# -- requirement answers age out ------------------------------------------
+
+import time as _time_req
+
+with _tempfile.TemporaryDirectory() as _folder:
+    _rp = os.path.join(_folder, "nexus_requirements.json")
+    _r = _requirements.RequirementCache(_rp)
+    _r.put(101, [(5, "needs this")])
+    check("a fresh answer is not stale", _r.stale(101), False)
+    check("an unknown mod is stale", _r.stale(999), True)
+    # An empty answer is still an answer and must not be re-asked daily.
+    _r.put(102, [])
+    check("a stored empty answer is not stale", _r.stale(102), False)
+    _r.save()
+
+    _again = _requirements.RequirementCache(_rp)
+    check("the stamp survives a save", _again.stale(101), False)
+    check("and so does the answer", _again.needs[101], [(5, "needs this")])
+
+    # Age it past the limit by reading it back with a one-second window.
+    _old = _requirements.RequirementCache(_rp, max_age=0.0)
+    _time_req.sleep(0.01)
+    check("an answer older than max_age is stale", _old.stale(101), True)
+    check("but the answer itself is still there", 101 in _old.needs, True)
+
+    # Entries written before stamps existed have unknown age, so the first
+    # sort after upgrading re-asks rather than trusting them forever.
+    io.open(_rp, "w", encoding="utf-8").write(
+        '{"needs": {"77": [[3, "old note"]]}}')
+    _legacy = _requirements.RequirementCache(_rp)
+    check("a legacy entry loads", _legacy.needs[77], [(3, "old note")])
+    check("a legacy entry is stale", _legacy.stale(77), True)
+
+    # forget() must drop the stamp too, or a failed re-fetch leaves a
+    # timestamp with nothing behind it.
+    _r2 = _requirements.RequirementCache(_rp)
+    _r2.put(55, [(1, "x")])
+    _r2.forget(55)
+    check("forget drops the answer", 55 in _r2.needs, False)
+    check("forget drops the stamp", 55 in _r2.fetched, False)
 
 
 if failures:
