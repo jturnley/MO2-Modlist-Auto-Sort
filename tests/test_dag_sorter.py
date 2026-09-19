@@ -1010,7 +1010,7 @@ check("and that name is the one users see",
 class _FlakyClient:
     """Fails the nth batch, answers everything else with empty results."""
 
-    def __init__(self, fail_on=(), boom="Nexus rejected the query: nope"):
+    def __init__(self, fail_on=(), boom="URLError: connection reset"):
         self.fail_on = set(fail_on)
         self.boom = boom
         self.calls = 0
@@ -1041,8 +1041,8 @@ with _tempfile.TemporaryDirectory() as _folder:
           _c.stale(_ids[_requirements.BATCH]), True)
     check("and the report says how many were missed",
           "{} not looked up".format(_requirements.BATCH) in _report, True)
-    check("and says why, in the words Nexus used",
-          "nope" in _report, True)
+    check("and says why, in the words the error used",
+          "connection reset" in _report, True)
 
     # A dead endpoint should give up quickly rather than grind through
     # every batch waiting for one to work.
@@ -1100,6 +1100,83 @@ with _tempfile.TemporaryDirectory() as _folder:
     _requirements.fetch([700, 701, 702], _nc, 1704, client=_nulls)
     check("an all-null batch leaves nothing to re-ask",
           [i for i in (700, 701, 702) if _nc.stale(i)], [])
+
+
+# -- one unknown mod id must not take the other nineteen with it ---------
+# Twenty mods go out under a single aliased query, so Nexus refusing it
+# over one dead id refuses the whole batch. That is what cost 380 mods of
+# 740, twice: "Nexus rejected the query: Mod not found", one bad id, and
+# the old loop stopped there.
+
+class _PickyClient:
+    """Rejects any query mentioning a mod it does not know."""
+
+    def __init__(self, unknown=()):
+        self.unknown = set(unknown)
+        self.calls = 0
+
+    def graphql(self, query, variables=None):
+        self.calls += 1
+        import re as _re
+        ids = [int(m) for m in _re.findall(r"m(\d+):", query)]
+        if any(i in self.unknown for i in ids):
+            raise RuntimeError("Nexus rejected the query: Mod not found")
+        return {"m%d" % i: {"modRequirements": {"nexusRequirements":
+                                                {"nodes": []}}}
+                for i in ids}
+
+
+with _tempfile.TemporaryDirectory() as _folder:
+    _ids = list(range(2000, 2000 + _requirements.BATCH))
+    _bad = _ids[7]
+
+    _pc = _requirements.RequirementCache(
+        os.path.join(_folder, "picky.json"))
+    _picky = _PickyClient(unknown=(_bad,))
+    _needs, _report = _requirements.fetch(_ids, _pc, 1704, client=_picky)
+
+    _good = [i for i in _ids if i != _bad]
+    check("the nineteen good mods still come back",
+          sorted(_pc.needs), sorted(_ids))
+    check("none of the good ones are left stale",
+          [i for i in _good if _pc.stale(i)], [])
+    check("the unknown id is stamped so it is not re-asked",
+          _pc.stale(_bad), False)
+    check("the report names it as unknown rather than missed",
+          "1 Nexus has no record of" in _report, True)
+    check("and does not claim anything was skipped",
+          "not looked up" in _report, False)
+    # Splitting 20 down to one bad id: 1 rejected + 2 halves + 2 + 2 + 2,
+    # and the clean halves answer in one call each. Bounded, not per-mod.
+    check("splitting stays cheap", _picky.calls <= 12, True)
+
+    # Two bad ids in one batch must both fall out, not just the first.
+    _pc2 = _requirements.RequirementCache(os.path.join(_folder, "p2.json"))
+    _picky2 = _PickyClient(unknown=(_ids[2], _ids[15]))
+    _needs2, _report2 = _requirements.fetch(_ids, _pc2, 1704, client=_picky2)
+    check("both unknown ids fall out",
+          "2 Nexus has no record of" in _report2, True)
+    check("and the other eighteen are recorded",
+          len([i for i in _ids if not _pc2.stale(i)]), _requirements.BATCH)
+
+    # A whole batch of unknowns must terminate, not recurse forever.
+    _pc3 = _requirements.RequirementCache(os.path.join(_folder, "p3.json"))
+    _picky3 = _PickyClient(unknown=_ids)
+    _needs3, _report3 = _requirements.fetch(_ids, _pc3, 1704, client=_picky3)
+    check("an all-unknown batch terminates",
+          "{} Nexus has no record of".format(_requirements.BATCH)
+          in _report3, True)
+
+    # A transport failure must NOT bisect - splitting a dead connection
+    # into halves just multiplies the requests that are going to fail.
+    _pc4 = _requirements.RequirementCache(os.path.join(_folder, "p4.json"))
+    _dead4 = _FlakyClient(fail_on=range(1, 99))
+    # Distinct ids, or dict.fromkeys collapses them into one batch and
+    # the back-off never gets a second chance to be counted.
+    _requirements.fetch(list(range(3000, 3000 + _requirements.BATCH * 4)),
+                        _pc4, 1704, client=_dead4)
+    check("a dead connection backs off instead of splitting",
+          _dead4.calls, _requirements.GIVE_UP)
 
 
 if failures:

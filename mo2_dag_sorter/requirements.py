@@ -45,7 +45,27 @@ class Unavailable(Exception):
     loop caught alongside genuine network errors and turned into a silent
     stop. The reason never reached the report, so a sweep that fetched
     nothing looked exactly like a sweep that had nothing to fetch.
+
+    `rejected` separates the two cases that matter. A rejected query is
+    Nexus reading the request and refusing it - one bad mod id among the
+    twenty is enough - and asking again unchanged will fail again. A
+    transport failure is the connection, and is worth retrying. The first
+    calls for splitting the batch up; the second calls for backing off.
     """
+
+    def __init__(self, message: str, rejected: bool = False) -> None:
+        Exception.__init__(self, message)
+        self.rejected = rejected
+
+
+def _rejection(exc: Exception) -> bool:
+    """Did Nexus refuse the query itself, rather than the line dropping?
+
+    Read off the message on purpose. The Extender raises one error type
+    for both, and the sorter has to keep working against Extender
+    versions older than this decision.
+    """
+    return "rejected the query" in str(exc).lower()         or "mod not found" in str(exc).lower()
 
 
 def _post(query: str, timeout: int = 30, client=None) -> dict:
@@ -59,7 +79,8 @@ def _post(query: str, timeout: int = 30, client=None) -> dict:
         try:
             return {"data": client.graphql(query)}
         except Exception as exc:
-            raise Unavailable("{}: {}".format(type(exc).__name__, exc))
+            raise Unavailable("{}: {}".format(type(exc).__name__, exc),
+                              _rejection(exc))
     try:
         return _post_direct(query, timeout)
     except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
@@ -74,7 +95,16 @@ def _post_direct(query: str, timeout: int = 30) -> dict:
                  "Accept": "application/json",
                  "User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as fh:
-        return json.load(fh)
+        payload = json.load(fh)
+    errors = payload.get("errors")
+    if errors:
+        # Without this the caller sees a payload with no "data" and reads
+        # it as twenty mods that need nothing - and now stamps them that
+        # way. A refusal has to look like a refusal on this path too.
+        first = errors[0]
+        raise Unavailable("Nexus rejected the query: {}".format(
+            first.get("message") if isinstance(first, dict) else first), True)
+    return payload
 
 
 def game_id(domain: str, client=None) -> int | None:
@@ -211,10 +241,14 @@ def fetch(mod_ids, cache: RequirementCache, game: int,
             len(cache.needs))
 
     asked = 0
+    dead = 0                    # ids Nexus says it has no record of
     failures = 0                # consecutive, reset by any batch that works
     reason = ""                 # the first failure's explanation, for the report
-    for start in range(0, len(missing), BATCH):
-        chunk = missing[start:start + BATCH]
+    # A work queue rather than a slice loop, because a rejected batch is
+    # put back as two smaller ones.
+    queue = [missing[i:i + BATCH] for i in range(0, len(missing), BATCH)]
+    while queue:
+        chunk = queue.pop(0)
         query = "{{ {} }}".format(" ".join(
             'm{0}: mod(modId: {0}, gameId: {1}) {{ modRequirements {{ '
             'nexusRequirements {{ nodes {{ modId notes }} }} }} }}'.format(
@@ -223,13 +257,28 @@ def fetch(mod_ids, cache: RequirementCache, game: int,
         try:
             data = (_post(query, client=client).get("data") or {})
         except Unavailable as exc:
-            # One bad batch is not a reason to abandon the other 300. It
-            # was: the first failure broke the loop, so a single hiccup
-            # 19 batches in cost the whole rest of the sweep and said
-            # nothing about why. Keep going, and give up only once it is
-            # clear the whole endpoint is gone rather than one request.
-            failures += 1
             reason = reason or str(exc)
+            if exc.rejected:
+                # Twenty mods go out under one query, so Nexus refusing it
+                # over a single unknown id takes the other nineteen down
+                # with it. That is what cost 380 mods: one dead id early
+                # in the list. Split and retry - the halves that are fine
+                # come back, and the bad id falls out on its own.
+                if len(chunk) > 1:
+                    half = len(chunk) // 2
+                    queue[:0] = [chunk[:half], chunk[half:]]
+                    continue
+                # Down to one, and Nexus still says no. Almost always a
+                # mod hidden, deleted or moved off-site. Stamp it so the
+                # next sort does not pay to find that out again.
+                cache.touch(chunk[0])
+                dead += 1
+                asked += 1
+                continue
+            # A transport failure is worth retrying, and is not a reason
+            # to abandon the rest of the sweep - but a dead endpoint
+            # should stop rather than grind through every batch.
+            failures += 1
             if failures >= GIVE_UP:
                 break
             time.sleep(0.2)
@@ -254,8 +303,10 @@ def fetch(mod_ids, cache: RequirementCache, game: int,
         asked, len(cache.needs))
     if aged:
         report += " ({} re-checked after a week)".format(aged)
-    if reason:
+    if dead:
+        report += "; {} Nexus has no record of".format(dead)
+    missed = len(missing) - asked
+    if missed and reason:
         short = reason if len(reason) <= 120 else reason[:117] + "..."
-        missed = len(missing) - asked
         report += "; {} not looked up - {}".format(missed, short)
     return cache.needs, report
