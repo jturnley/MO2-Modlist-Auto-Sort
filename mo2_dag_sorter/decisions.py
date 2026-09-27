@@ -154,6 +154,18 @@ class Decisions:
     def known(self, a: str, b: str) -> bool:
         return key(a, b) in self.first
 
+    def set_winner(self, winner: str, loser: str, note: str = "") -> None:
+        """Record which of a pair takes priority.
+
+        The same fact as `set`, stated the way a user thinks about it.
+        MO2's left pane loads top to bottom and later wins, so the winner
+        is the one that loads *last* - and every time that has to be
+        re-derived at a call site it is a chance to get it backwards.
+        The dialog got it backwards exactly once, which is why this
+        exists.
+        """
+        self.set(loser, winner, note)
+
     def set(self, first: str, second: str, note: str = "") -> None:
         pair = key(first, second)
         self.first[pair] = first

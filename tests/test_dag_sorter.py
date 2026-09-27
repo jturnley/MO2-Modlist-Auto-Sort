@@ -1179,6 +1179,44 @@ with _tempfile.TemporaryDirectory() as _folder:
           _dead4.calls, _requirements.GIVE_UP)
 
 
+# -- the conflict dialog asks who wins, and records who wins -------------
+# The dialog used to take whichever radio was checked and store that mod
+# as the one loading FIRST, while the column above it was headed "wins".
+# Clicking the right-hand option therefore did the opposite of what the
+# heading said. resolve_ui cannot be imported here (PyQt6), so the wiring
+# is read off the source and the semantics are tested through decisions.
+
+with _tempfile.TemporaryDirectory() as _folder:
+    _d = decisions.Decisions(os.path.join(_folder, "rules.json"))
+    _d.set_winner("Winner Mod", "Loser Mod")
+    check("the winner is not the one that loads first",
+          _d.first[decisions.key("Winner Mod", "Loser Mod")], "Loser Mod")
+    # Stated the other way round, the two calls must agree.
+    _d2 = decisions.Decisions(os.path.join(_folder, "r2.json"))
+    _d2.set("Loser Mod", "Winner Mod")
+    check("set_winner and set agree about the pair",
+          _d2.first[decisions.key("Winner Mod", "Loser Mod")],
+          _d.first[decisions.key("Winner Mod", "Loser Mod")])
+
+_resolve_src = io.open(
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "mo2_dag_sorter", "resolve_ui.py"), encoding="utf-8").read()
+check("the right-hand column is the winner",
+      "Loads last - WINS (selected)" in _resolve_src, True)
+check("the left-hand column is the one overwritten",
+      "Loads first - gets overwritten" in _resolve_src, True)
+check("the dialog records a winner rather than converting to an order",
+      "self._decisions.set_winner(" in _resolve_src, True)
+check("the inverted mapping is gone",
+      "second = edge.parent if first == edge.child" in _resolve_src, False)
+check("the winner is rendered into the right-hand column",
+      "self.table.setCellWidget(row, 1, self._cell(" in _resolve_src
+      and "self._winners[row], row, True)" in _resolve_src, True)
+check("picking the loser redraws the row instead of just moving the dot",
+      "self._winners[row] = name" in _resolve_src
+      and "self._render_row(row)" in _resolve_src, True)
+
+
 if failures:
     print("FAILED")
     for f in failures:
