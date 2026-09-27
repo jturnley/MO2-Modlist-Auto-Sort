@@ -171,6 +171,28 @@ no credential, so they resolve for everyone. A key is what lets the tiering
 look up a game's category table on v1 when MO2's own connection is
 unavailable.
 
+## If the right-click entries go missing
+
+MO2 has no plugin API for the mod list's right-click menu — it is built in
+C++ — so the sorter attaches itself to the widget instead. That attachment
+can be lost. MO2 rebuilds the mod list when the set of installed plugins
+changes, and removing an unrelated plugin has been seen to take these
+entries with it.
+
+A watchdog notices and puts them back within a few seconds. If it has not,
+**Tools → Restore Right-Click Menu** does it immediately and tells you what
+it found:
+
+| What it says | What it means |
+| --- | --- |
+| The entries were missing. Attached. | Fixed. |
+| They were already attached, and have been reattached anyway. | They were there; the flag can outlive the filter, so it hooked again regardless. |
+| The sorter has not finished starting up yet. | Run it once MO2's window is up. |
+| MO2's mod list could not be found in this window. | A newer MO2 renamed or restructured it. Please open an issue. |
+
+Nothing is only reachable from that menu. Every action it offers is also on
+the Tools menu, so a lost hook costs convenience and nothing else.
+
 ## Install
 
 Copy `mo2_dag_sorter/` into `MO2/plugins/` and restart MO2.

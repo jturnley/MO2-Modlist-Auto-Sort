@@ -991,8 +991,9 @@ check("but stands down when the Extender is installed",
 # launch - which is how the last attempt at this read to a user.
 check("and does so without failing to initialise",
       "return not nexus_api.installed()" in _plugin_src, False)
-check("the other two tools are always offered",
-      "tools = [DagSorterTool(), DagRestoreTool()]" in _create, True)
+check("the tools that do not depend on the Extender are always offered",
+      "tools = [DagSorterTool(), DagRestoreTool(), DagMenuTool()]"
+      in _create, True)
 
 # -- one plugin, one row in the vault's caller list ----------------------
 from mo2_dag_sorter import nexus_api as _na, vault_key as _vk
@@ -1340,6 +1341,35 @@ check("the plugin holds the keeper, so its timer is not collected",
       "self._menu_keeper = context_menu.keep(" in _plugin_src2, True)
 check("and a second ui-ready replaces it rather than stacking one",
       "old.stop()" in _plugin_src2, True)
+
+
+# -- and can be put back by hand -----------------------------------------
+# The watchdog above closes the window to a few seconds, but someone
+# staring at a menu that has lost its entries wants an answer now, and
+# wants to know which of several possible faults it is.
+check("there is a repair entry on the Tools menu",
+      "class DagMenuTool(mobase.IPluginTool):" in _plugin_src2, True)
+check("it is registered unconditionally",
+      "DagMenuTool()]" in _plugin_src2, True)
+check("under a name of its own, so MO2 does not group it away",
+      _plugin_src2.count('"MO2 DAG Sorter - Menu"'), 1)
+check("the builder is recorded at init, not only when the UI comes up",
+      "context_menu.remember(None, self._build_menu)" in _plugin_src2, True)
+check("the repair reports what it found rather than only trying",
+      "ok, detail = context_menu.reattach(window)" in _plugin_src2, True)
+check("a failure is a warning, not a quiet information box",
+      "QMessageBox.warning(window, title, body)" in _plugin_src2, True)
+check("the module keeps the builder where a separate tool can reach it",
+      "def reattach(" in _menu_src and "def remember(" in _menu_src, True)
+check("remembering one half does not erase the other",
+      "if window is not None:" in _menu_src
+      and "if build is not None:" in _menu_src, True)
+check("the stale hooked flag is cleared so a repair is never a no-op",
+      "view.setProperty(HOOKED, False)" in _menu_src, True)
+check("a missing mod list is reported as such, not as success",
+      "could not be found in this window" in _menu_src, True)
+check("a destroyed remembered window falls back to asking Qt",
+      "_state[\"window\"] = None" in _menu_src, True)
 
 
 if failures:

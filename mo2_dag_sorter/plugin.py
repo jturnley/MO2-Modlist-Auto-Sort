@@ -20,8 +20,9 @@ from . import (backups, category_ui, context_menu, dag,
                key_ui, nexus_api, resolve_ui, restore_ui, stacks,
                vault_key)
 
-VERSION = mobase.VersionInfo(0, 9, 8, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 9, 9, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
+BREAK = chr(10)
 
 
 class DagSorterTool(mobase.IPluginTool):
@@ -44,6 +45,15 @@ class DagSorterTool(mobase.IPluginTool):
         try:
             organizer.onUserInterfaceInitialized(self._ui_ready)
         except (AttributeError, RuntimeError, TypeError):
+            pass
+        # Record the menu builder now, not in _ui_ready. If the callback
+        # above never fires - an older MO2, or a launch where the hook
+        # went in and later came off - the repair entry still has
+        # something to put back, and can say what is missing instead of
+        # only that something is.
+        try:
+            context_menu.remember(None, self._build_menu)
+        except AttributeError:
             pass
         return True
 
@@ -840,6 +850,95 @@ class DagKeyTool(mobase.IPluginTool):
                          QApplication.activeWindow()).exec()
 
 
+class DagMenuTool(mobase.IPluginTool):
+    """Put the sorter's right-click entries back on the mod list.
+
+    The entries are not a plugin API - MO2 builds that menu in C++ and
+    offers no hook - so the sorter attaches itself to the widget. That
+    attachment can be lost: MO2 rebuilds the mod list when the plugin
+    set changes, and a reload of an unrelated plugin has been observed
+    to take these entries with it. A watchdog notices and reattaches
+    within a few seconds, but "wait and see" is a poor answer to someone
+    who is looking at a menu that no longer has what they want, so this
+    does it on demand and says which of the possible faults it found.
+    """
+
+    def __init__(self) -> None:
+        mobase.IPluginTool.__init__(self)
+        self._organizer = None
+
+    def init(self, organizer: mobase.IOrganizer) -> bool:
+        self._organizer = organizer
+        return True
+
+    def name(self) -> str:
+        return "MO2 DAG Sorter - Menu"
+
+    def author(self) -> str:
+        return "MO2-DAG-Sorter"
+
+    def description(self) -> str:
+        return self.tr("Restore the sorter's right-click entries on the mod "
+                       "list if they have gone missing.")
+
+    def version(self) -> mobase.VersionInfo:
+        return VERSION
+
+    def requirements(self):
+        return []
+
+    def settings(self):
+        return []
+
+    def master(self) -> str:
+        return "MO2 DAG Sorter"
+
+    def displayName(self) -> str:
+        return self.tr("Restore Right-Click Menu")
+
+    def tooltip(self) -> str:
+        return self.tr("Put the sorter's entries back on the mod list's "
+                       "right-click menu")
+
+    def icon(self):
+        from PyQt6.QtGui import QIcon
+        return QIcon()
+
+    def tr(self, text: str) -> str:
+        return QCoreApplication.translate("DagSorter", text)
+
+    def display(self) -> None:
+        # _parentWidget first: MO2 hands tools the main window, which is
+        # exactly what needs hooking, and it is right even when the active
+        # window is a dialog this tool was opened from.
+        window = None
+        for source in (self._parentWidget, QApplication.activeWindow):
+            try:
+                window = source()
+            except (AttributeError, RuntimeError):
+                window = None
+            if window is not None:
+                break
+
+        title = self.tr("Restore Right-Click Menu")
+        was = context_menu.attached(window)
+        ok, detail = context_menu.reattach(window)
+
+        if ok and was:
+            body = self.tr("The entries were already attached, and "
+                           "have been reattached anyway.")
+            body = body + BREAK + BREAK + detail
+        elif ok:
+            body = self.tr("The entries were missing.") + " " + detail
+        else:
+            body = detail
+
+        if ok:
+            QMessageBox.information(window, title, body)
+        else:
+            QMessageBox.warning(window, title, body)
+
+
 def create_plugins():
     """The tools MO2 should register, decided before it asks.
 
@@ -858,7 +957,7 @@ def create_plugins():
     this: the Extender's dialog offers to take that copy over and blank
     it.
     """
-    tools = [DagSorterTool(), DagRestoreTool()]
+    tools = [DagSorterTool(), DagRestoreTool(), DagMenuTool()]
     if not nexus_api.installed():
         tools.append(DagKeyTool())
     return tools
