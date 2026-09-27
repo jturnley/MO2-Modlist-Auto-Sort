@@ -152,6 +152,17 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     if decisions is None:
         decisions = decisions_mod.Decisions(
             os.path.join(cache_dir, "user_rules.json"))
+    # Before anything reads the rules: carry any of them that were left
+    # pointing at a mod's old name across to the name it has now. A freeze
+    # is the user placing a mod by hand, and losing one to a reinstall is
+    # losing work they did deliberately.
+    renamed = []
+    try:
+        renamed = decisions.reconcile(nodes)
+        if renamed:
+            decisions.save()
+    except (AttributeError, OSError):
+        pass                       # a rules file we cannot rewrite still sorts
     edges, dropped = dag.acyclic_edges(movable, edges, decisions)
     ordered = dag.topological_sort(movable, edges,            # [7]
                                    decisions.pins, decisions.freezes,
@@ -168,6 +179,13 @@ def sort_profile(mo2_root: str, profile: str = "Default",
              if was[n.name] != i]
     report = "{}; {} edges ({} conflicts settled); {} of {} mods move".format(
         nexus_report, len(edges), len(dropped), len(moved), len(movable))
+    if renamed:
+        # Said out loud because it is a guess, however careful: a rule the
+        # user set by hand has been moved onto a mod they did not name.
+        report += "; {} rule(s) followed a renamed mod ({})".format(
+            len(renamed),
+            ", ".join("{} -> {}".format(a, b) for a, b in renamed[:3])
+            + (", ..." if len(renamed) > 3 else ""))
     # A pair the user has already ruled on is settled, not outstanding.
     unresolved = [e for e in dropped
                   if not decisions.known(e.parent, e.child)]

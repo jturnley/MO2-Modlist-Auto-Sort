@@ -1217,6 +1217,131 @@ check("picking the loser redraws the row instead of just moving the dot",
       and "self._render_row(row)" in _resolve_src, True)
 
 
+# -- rules survive a rename, but only when the mod is unmistakable -------
+# A freeze is keyed on the name MO2 shows, and MO2 names a mod after the
+# archive it came from - so reinstalling or upgrading can rename it and
+# silently orphan the rule. The Nexus id is the stable half. It is NOT
+# unique per installed mod though: on a real 1143-mod list, 327 mods share
+# an id with another (four "At Your Own Pace" modules, four "Visions NPCs
+# Recasted" packs). So the id narrows, the name decides, and anything
+# doubtful is left alone.
+
+class _Mod:
+    def __init__(self, name, nexus_id=0):
+        self.name, self.nexus_id = name, nexus_id
+
+
+with _tempfile.TemporaryDirectory() as _folder:
+    def _rules(tag):
+        return decisions.Decisions(os.path.join(_folder, tag + ".json"))
+
+    # The plain case: one mod, one id, renamed by an upgrade.
+    _r = _rules("plain")
+    _r.freeze("Patch Mod", "Base Mod", "", "below")
+    _r.reconcile([_Mod("Base Mod", 10), _Mod("Patch Mod", 20)])
+    check("the id is learned while the mod is present",
+          _r.ids.get("Patch Mod"), 20)
+    _moves = _r.reconcile([_Mod("Base Mod", 10), _Mod("Patch Mod 2.1", 20)])
+    check("a renamed mod carries its freeze across",
+          _r.freezes_below.get("Patch Mod 2.1"), "Base Mod")
+    check("and the old name is gone", "Patch Mod" in _r.freezes_below, False)
+    check("and the move is reported", _moves, [("Patch Mod", "Patch Mod 2.1")])
+
+    # The case that breaks a naive id lookup: one page, several mods.
+    _s = _rules("shared")
+    _s.freeze("At Your Own Pace - Companions", "Base", "", "below")
+    _s.reconcile([_Mod("Base", 1),
+                  _Mod("At Your Own Pace", 52704),
+                  _Mod("At Your Own Pace - Companions", 52704),
+                  _Mod("At Your Own Pace - Dawnguard", 52704)])
+    _moves = _s.reconcile([_Mod("Base", 1),
+                           _Mod("At Your Own Pace", 52704),
+                           _Mod("At Your Own Pace - Companions 1.4", 52704),
+                           _Mod("At Your Own Pace - Dawnguard", 52704)])
+    check("the right module of a multi-mod page is chosen",
+          _s.freezes_below.get("At Your Own Pace - Companions 1.4"), "Base")
+    check("its siblings are left alone", len(_moves), 1)
+
+    # Two siblings equally plausible: pick neither.
+    _a = _rules("ambiguous")
+    _a.freeze("Pack", "Base", "", "below")
+    _a.reconcile([_Mod("Base", 1), _Mod("Pack", 99)])
+    _moves = _a.reconcile([_Mod("Base", 1),
+                           _Mod("Visions NPCs Recasted - Pack 1", 99),
+                           _Mod("Visions NPCs Recasted - Pack 2", 99)])
+    check("an ambiguous id moves nothing", _moves, [])
+    check("and the stale rule is left where it was",
+          _a.freezes_below.get("Pack"), "Base")
+
+    # A mod that already carries rules is never taken over.
+    _t = _rules("taken")
+    _t.freeze("Old Name", "Base", "", "below")
+    _t.freeze("Other Mod", "Base", "", "above")
+    _t.reconcile([_Mod("Base", 1), _Mod("Old Name", 7), _Mod("Other Mod", 7)])
+    _moves = _t.reconcile([_Mod("Base", 1), _Mod("Other Mod", 7)])
+    check("a mod with rules of its own is not treated as a rename", _moves, [])
+
+    # Without a remembered id there is nothing to match on, and guessing
+    # from the name alone is not good enough to move a rule.
+    _u = _rules("unknown")
+    _u.freeze("Never Seen", "Base", "", "below")
+    check("an unknown mod is not matched by name alone",
+          _u.reconcile([_Mod("Never Seen 2.0", 5), _Mod("Base", 1)]), [])
+
+    # Pins and pair answers ride along, not just freezes.
+    _v = _rules("all")
+    _v.pin("Runner", "bottom")
+    _v.set_winner("Runner", "Loser")
+    _v.set_category("Runner", "Patches")
+    _v.reconcile([_Mod("Runner", 42), _Mod("Loser", 43)])
+    _v.reconcile([_Mod("Runner 3.0", 42), _Mod("Loser", 43)])
+    check("a pin follows the rename", _v.pins.get("Runner 3.0"), "bottom")
+    check("a category follows the rename",
+          _v.categories.get("Runner 3.0"), "Patches")
+    check("a pair answer follows the rename",
+          _v.first.get(decisions.key("Runner 3.0", "Loser")), "Loser")
+
+    # And it all survives a trip through the file.
+    _v.save()
+    _w = decisions.Decisions(os.path.join(_folder, "all.json"))
+    check("remembered ids are persisted", _w.ids.get("Runner 3.0"), 42)
+    check("the renamed pin is persisted", _w.pins.get("Runner 3.0"), "bottom")
+
+
+# -- the right-click hook puts itself back -------------------------------
+# It vanished once when an unrelated plugin was removed from the instance.
+# The left pane belongs to MO2, not to this plugin: it may not exist when
+# the UI-ready callback fires, MO2 can rebuild it, and the order plugins
+# start in shifts whenever any other plugin is added or removed. A single
+# attempt at one moment is therefore not a hook, it is a coin toss.
+# context_menu needs PyQt6, so the wiring is read off the source.
+
+_menu_src = io.open(
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "mo2_dag_sorter", "context_menu.py"), encoding="utf-8").read()
+check("the hook is kept alive on a timer rather than installed once",
+      "class Keeper(QObject):" in _menu_src and "self._timer" in _menu_src,
+      True)
+check("it retries while the view is still missing",
+      "self._timer.start(self.FAST)" in _menu_src, True)
+check("and keeps checking after it succeeds, in case the view is rebuilt",
+      "self._timer.start(self.SLOW)" in _menu_src, True)
+check("a view that is already hooked is not hooked twice",
+      "if view.property(HOOKED):" in _menu_src, True)
+check("a missing active popup is not taken as proof there is no menu",
+      "topLevelWidgets()" in _menu_src, True)
+check("a dead window stops the keeper instead of raising",
+      "except RuntimeError:" in _menu_src, True)
+
+_plugin_src2 = io.open(
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "mo2_dag_sorter", "plugin.py"), encoding="utf-8").read()
+check("the plugin holds the keeper, so its timer is not collected",
+      "self._menu_keeper = context_menu.keep(" in _plugin_src2, True)
+check("and a second ui-ready replaces it rather than stacking one",
+      "old.stop()" in _plugin_src2, True)
+
+
 if failures:
     print("FAILED")
     for f in failures:

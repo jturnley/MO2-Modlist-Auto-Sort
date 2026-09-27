@@ -20,7 +20,7 @@ from . import (backups, category_ui, context_menu, dag,
                key_ui, nexus_api, resolve_ui, restore_ui, stacks,
                vault_key)
 
-VERSION = mobase.VersionInfo(0, 9, 7, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 9, 8, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 
 
@@ -49,7 +49,21 @@ class DagSorterTool(mobase.IPluginTool):
 
     # -- the left pane right-click menu -----------------------------------
     def _ui_ready(self, window) -> None:
-        context_menu.install(window, self._build_menu)
+        # Held on the plugin so the timer is not collected, and so a second
+        # call (MO2 has been known to fire this more than once) replaces the
+        # keeper rather than running two of them.
+        old = getattr(self, "_menu_keeper", None)
+        if old is not None:
+            try:
+                old.stop()
+            except RuntimeError:
+                pass
+        try:
+            self._menu_keeper = context_menu.keep(window, self._build_menu)
+        except Exception:
+            # The right-click entries are a convenience; both actions are
+            # in the Tools menu regardless, so this never stops MO2 loading.
+            self._menu_keeper = None
 
     def _build_menu(self, names, menu) -> None:
         """Append our entries to the menu MO2 has just built."""

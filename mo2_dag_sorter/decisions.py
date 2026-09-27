@@ -41,6 +41,16 @@ import json
 import os
 
 
+# How alike two names must be before a rule is moved from one to the other,
+# and how far ahead of the runner-up the winner has to be. Both only apply
+# when a Nexus id covers several installed mods, which is the common case:
+# "At Your Own Pace - Companions" and "- Dawnguard" share an id and are not
+# interchangeable. Deliberately strict - skipping is visible, moving a rule
+# onto the wrong mod is not.
+NAME_MATCH = 0.60
+NAME_MARGIN = 0.15
+
+
 def key(a: str, b: str) -> tuple[str, str]:
     """A pair's identity, independent of which way round it is asked."""
     return (a, b) if a <= b else (b, a)
@@ -62,6 +72,13 @@ class Decisions:
         self.freeze_notes: dict[str, str] = {}
         # {mod name: the category name the user gave it}
         self.categories: dict[str, str] = {}
+        # {mod name: its Nexus mod id}, learned on each sort for every mod a
+        # rule mentions. Every rule here is keyed by the name MO2 shows, and
+        # that name is not stable: reinstalling or upgrading a mod can change
+        # it, at which point a freeze the user set deliberately stops
+        # matching anything and is silently ignored. The id does not change,
+        # so it is what lets the rule be carried across to the new name.
+        self.ids: dict[str, int] = {}
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 raw = json.load(fh)
@@ -90,6 +107,12 @@ class Decisions:
         for mod, name in (raw.get("categories") or {}).items():
             if str(name).strip():
                 self.categories[str(mod)] = str(name).strip()
+        for mod, nexus in (raw.get("ids") or {}).items():
+            try:
+                if int(nexus) > 0:
+                    self.ids[str(mod)] = int(nexus)
+            except (TypeError, ValueError):
+                continue
         for entry in raw.get("freezes") or ():
             try:
                 mod = str(entry["mod"])
@@ -106,6 +129,124 @@ class Decisions:
             where[mod] = target
             if entry.get("note"):
                 self.freeze_notes[mod] = str(entry["note"])
+
+    # -- surviving a rename ----------------------------------------------
+
+    def names(self) -> set:
+        """Every mod name any rule here refers to."""
+        found = set(self.pins) | set(self.freezes) | set(self.categories)
+        found |= set(self.freezes_below) | set(self.freezes_below.values())
+        found |= set(self.freezes.values())
+        for a, b in self.first:
+            found.add(a)
+            found.add(b)
+        return found
+
+    def rename(self, old: str, new: str) -> None:
+        """Move every rule mentioning `old` onto `new`."""
+        if old == new or not new:
+            return
+
+        def swap(name):
+            return new if name == old else name
+
+        self.first = {key(swap(a), swap(b)): swap(v)
+                      for (a, b), v in self.first.items()}
+        self.notes = {key(swap(a), swap(b)): v
+                      for (a, b), v in self.notes.items()}
+        for store in (self.pins, self.pin_notes, self.categories):
+            if old in store:
+                store[swap(old)] = store.pop(old)
+        for store in (self.freezes, self.freezes_below):
+            if old in store:
+                store[new] = store.pop(old)
+            for mod, target in list(store.items()):
+                if target == old:
+                    store[mod] = new
+        if old in self.freeze_notes:
+            self.freeze_notes[new] = self.freeze_notes.pop(old)
+        if old in self.ids:
+            self.ids[new] = self.ids.pop(old)
+
+    def reconcile(self, nodes) -> list:
+        """Carry rules across mods that have been renamed. Returns the moves.
+
+        Called with the mods actually installed. Every rule-mentioned mod
+        that is present has its Nexus id remembered; every rule-mentioned
+        mod that is *absent* is looked for by the id remembered last time.
+
+        That is what makes a freeze survive a reinstall. MO2 names a mod
+        after the archive it came from, so upgrading can rename it, and a
+        rule keyed on the old name then matches nothing and is dropped on
+        the floor without a word.
+
+        A Nexus id is NOT one MO2 mod. One mod page routinely ships as
+        several installed mods - four "At Your Own Pace" modules, four
+        "Visions NPCs Recasted" packs - and on a real list that is about a
+        third of everything. So the id only narrows the field; the name
+        then has to pick out of it, and anything less than an obvious
+        winner is left alone.
+
+        Moving a rule onto the wrong mod would silently relocate a
+        placement the user made by hand, which is worse than losing it -
+        losing it they can see. Every doubtful case is skipped.
+        """
+        import difflib
+
+        live = {node.name for node in nodes}
+        by_id: dict = {}
+        for node in nodes:
+            nexus = int(getattr(node, "nexus_id", 0) or 0)
+            if nexus:
+                by_id.setdefault(nexus, []).append(node.name)
+
+        mentioned = self.names()
+        # Learn first, so a mod here now can still be found after a later
+        # rename.
+        for node in nodes:
+            nexus = int(getattr(node, "nexus_id", 0) or 0)
+            if nexus and node.name in mentioned:
+                self.ids[node.name] = nexus
+
+        def norm(name: str) -> str:
+            keep = [c.lower() if (c.isalnum() or c == " ") else " "
+                    for c in name]
+            return " ".join("".join(keep).split())
+
+        def score(a: str, b: str) -> float:
+            return difflib.SequenceMatcher(None, norm(a), norm(b)).ratio()
+
+        # Candidates are installed mods carrying no rules of their own: a
+        # mod the user has already spoken about is not a mod that just
+        # appeared under a new name.
+        missing = sorted(n for n in mentioned - live if self.ids.get(n))
+        taken: set = set()
+        moves = []
+        for name in missing:
+            pool = [m for m in by_id.get(self.ids[name], ())
+                    if m not in mentioned and m not in taken]
+            if not pool:
+                continue
+            if len(pool) == 1:
+                best, margin = pool[0], 1.0
+            else:
+                ranked = sorted(((score(name, m), m) for m in pool),
+                                reverse=True)
+                if ranked[0][0] < NAME_MATCH:
+                    continue
+                margin = ranked[0][0] - ranked[1][0]
+                if margin < NAME_MARGIN:
+                    continue          # two plausible mods, so pick neither
+                best = ranked[0][1]
+            self.rename(name, best)
+            taken.add(best)
+            mentioned = self.names()
+            moves.append((name, best))
+
+        # Ids exist to serve the rules, so forget the rest.
+        for name in set(self.ids) - self.names():
+            self.ids.pop(name, None)
+        return moves
 
     def set_category(self, mod: str, category: str) -> None:
         """Record what a mod is, for one the metadata could not say."""
@@ -145,7 +286,8 @@ class Decisions:
         freezes.sort(key=lambda e: e["mod"])
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"pairs": pairs, "pins": pins, "freezes": freezes,
+            json.dump({"ids": {m: i for m, i in sorted(self.ids.items())},
+                       "pairs": pairs, "pins": pins, "freezes": freezes,
                        "categories": dict(sorted(self.categories.items()))},
                       fh, indent=1)
         os.replace(tmp, self.path)
