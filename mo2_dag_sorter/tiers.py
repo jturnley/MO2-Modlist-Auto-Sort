@@ -140,7 +140,17 @@ def _heuristic_tier(node) -> tuple[int, str]:
     is an SKSE plugin and nothing else, so it settles the question; textures
     only suggest a visual mod, so they are consulted last.
     """
-    files = node.file_manifest
+    packed = list(getattr(node, "archive_manifest", None) or ())
+    files = list(node.file_manifest) + packed
+    if not files:
+        return DEFAULT_TIER, "no files scanned"
+    tier, why = _read_tree(files)
+    if packed and _read_tree(node.file_manifest) != (tier, why):
+        why += " (read from inside its .bsa)"
+    return tier, why
+
+
+def _read_tree(files) -> tuple[int, str]:
     if not files:
         return DEFAULT_TIER, "no files scanned"
     exts = {os.path.splitext(f)[1] for f in files}
@@ -155,9 +165,12 @@ def _heuristic_tier(node) -> tuple[int, str]:
     if ".hkx" in exts:
         return 2, "ships animations"
     plugin_count = sum(1 for f in files if f.endswith(PLUGIN_EXTS_LOWER))
-    if plugin_count and len(files) <= 4:
+    archived = any(f.endswith(".bsa") for f in files)
+    if plugin_count and len(files) <= 4 and not archived:
         # A mod that is only a plugin, with no assets of its own, is almost
         # always a patch: it has nothing to contribute but record edits.
+        # An archive beside it is assets of its own, whether or not the
+        # archive could be read.
         return 5, "a plugin and nothing else, so it is a patch"
     if ".dds" in exts or ".nif" in exts:
         return 3, "ships meshes or textures"
@@ -297,6 +310,33 @@ SHADER_FRAMEWORKS = ("community shaders",)
 # rather than a thing that sits beneath it, so ordering one against the
 # other would be inventing a relationship that does not exist.
 SHADER_USERS = ("pbr", "parallax")
+
+
+# Words too common to say two mod names belong to one family.
+FAMILY_NOISE = frozenset(("and", "the", "of", "a", "for", "se", "sse",
+                          "ae", "le", "by", "with", "in"))
+
+
+def variant_of(variant: str, plain: str) -> bool:
+    """True when ``variant`` is a PBR, parallax or complex-material edition
+    of the mod called ``plain``.
+
+    The edition is drawn with different shader data, so wherever the two
+    ship the same file the edition has to be the one that wins, or the
+    surface is rendered with the plain mod's texture and the edition's
+    mesh flags. That holds only between editions of one mod: two different
+    mods, one of which happens to be PBR, are not competing for the same
+    surfaces in the same way, and "Civil War Champions Redone - Complex
+    Material" says nothing about how it should sit against "Creation Club
+    Open Helmets" just because both touch a helmet.
+
+    So the plain mod's name has to be inside the edition's, word for word,
+    and be at least two real words long.
+    """
+    if not uses_shaders(variant) or uses_shaders(plain):
+        return False
+    stem = words_in(plain) - FAMILY_NOISE
+    return len(stem) >= 2 and stem <= words_in(variant)
 
 
 def is_shader_framework(name: str) -> bool:

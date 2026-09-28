@@ -25,7 +25,12 @@ In descending authority:
 2. **Its Nexus category**, resolved through your instance's `categories.dat`.
 3. **MO2's own category.**
 4. **The file tree** — a guess from what the mod ships. Decent, but it reads
-   what a mod *contains* rather than what it *is*.
+   what a mod *contains* rather than what it *is*. For a mod that packs its
+   assets into a `.bsa`, the archive's name table is read too, so a quest mod
+   shipped as `Quest.esp` + `Quest.bsa` is not mistaken for a bare patch. Only
+   archives the game will actually open are read (see below); their contents
+   never feed the conflict graph, because a loose file beats an archived one
+   whatever the left pane says.
 
 Tools (BodySlide, Nemesis, Pandora, FNIS, PG Patcher, xEdit…) are detected
 and excluded from being sorting requirements entirely — their *output* goes
@@ -43,12 +48,22 @@ Ordered by authority, strongest first:
 | `master_requirement` | a plugin's masters. A fact |
 | `asset_path` | where files land. A fact |
 | `shader_framework` | Community Shaders before anything using shaders |
+| `skse_runtime` | two mods ship the same SKSE DLL and only one copy loads on your game version. A fact, read from the DLL's exports |
+| `skse_version` | two mods ship the same SKSE DLL and both load: the newer build wins |
 | `nexus_requirement` | the mod page's Requirements list |
 | `name_extension` | `X - Patch for Y` is a placement statement |
 | `file_conflict` | overlapping files, weakest and the first to yield |
 
 Freezing a stack yields to soft edges and refuses on hard ones, so a freeze
 can override a file conflict but cannot break a master dependency.
+
+A `file_conflict` edge still needs a direction. In order: tier, then surface
+rank (PBR over parallax over plain), then **family** — `Ruins Clutter Improved
+PBR` wins over `Ruins Clutter Improved` — then **shape**: a handful of files
+landing inside a big mod is a patch to it, and a mod whose files mostly land
+inside one many times its size is aimed at that corner of it, so the narrower
+mod wins. Generated output is never reordered by shape. Failing all of those,
+the order you already had is kept.
 
 ### What it tells you about
 
@@ -57,6 +72,12 @@ can override a file conflict but cannot break a master dependency.
 - **Mods with no category** — where the placement is a guess, and why.
 - **Identical mods** — separate mods shipping byte-identical file lists.
 - **Shadowed mods** — entirely overridden by something above them.
+- **Things that will not load at all**, whatever the order: a plugin whose
+  master is missing (and why — disabled mod, unticked, or not installed), an
+  archive no active plugin opens, an SKSE DLL built for another game version.
+  **Reported only.** Nothing is disabled, moved or deleted on the strength of
+  it. The game's own Data folder and `overwrite/` count as installed, so
+  `Update.esm` and Creation Club content are never called missing.
 
 ## Layout
 
@@ -66,6 +87,9 @@ mo2_dag_sorter/       the plugin - copy this folder into MO2/plugins/
   dag.py              edges, cycles, Kahn's algorithm, freezes
   tiers.py            what a mod is, and how sure we are
   scan.py             the file tree, and what makes something a tool
+  archives.py         .bsa name tables, for tiering only
+  skse.py             what an SKSE DLL says about itself
+  loadcheck.py        what will not load - reported, never acted on
   modlist.py          reading and writing modlist.txt
   nexus.py            v1 metadata + cache    requirements.py  v2 GraphQL
   decisions.py        user_rules.json        backups.py       undo

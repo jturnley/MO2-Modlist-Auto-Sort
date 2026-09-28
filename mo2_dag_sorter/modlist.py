@@ -40,6 +40,10 @@ class ModNode:
     file_manifest: list[str] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
     masters: list[str] = field(default_factory=list)
+    # Paths inside the mod's BSAs. Read for tiering only - see archives.py
+    # for why they must never reach the conflict graph.
+    archive_manifest: list[str] = field(default_factory=list)
+    skse_dlls: dict = field(default_factory=dict)   # path -> skse.DllInfo
 
     @property
     def enabled(self) -> bool:

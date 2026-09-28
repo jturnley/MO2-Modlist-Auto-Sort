@@ -19,6 +19,12 @@ tier matrix or preserves what was already there.
 **master_requirement** is the one hard fact available: a plugin cannot load
 above a plugin it is built on.  These are the only edges allowed to contradict
 the tier matrix, and when they do, the cycle detector is what catches it.
+
+**skse_runtime** and **skse_version** settle two mods shipping the same SKSE
+plugin DLL from the DLLs themselves: a copy that loads on this game version
+beats one that does not, and otherwise the newer build wins.  The pair then
+gets no file_conflict edge, because the DLL answered the question the file
+overlap was only guessing at.
 """
 
 from __future__ import annotations
@@ -98,8 +104,41 @@ def _overlay(a, b, shared: int):
     return big, small
 
 
-def conflict_edges(nodes) -> list[DependencyEdge]:
-    """One edge per conflicting pair, by tier, surface rank, shape, order."""
+# The other shape worth reading: a mod aimed at one corner of a much larger
+# one. "Ruins Clutter PBR" retextures the ruins set that a whole-game PBR
+# pack also covers; most of what it ships collides, and the big pack is
+# many times its size. The narrower mod was installed to do that corner
+# better, so it wins. Unlike an overlay it need not be tiny - a hundred
+# files aimed at one corner is still aimed - so it is held to a higher
+# share instead, and it is never applied to generated output, whose whole
+# job is to sit on top of everything it was built from.
+SCOPE_SHARE = 0.5
+SCOPE_RATIO = 8
+
+
+def _scope(a, b, shared: int):
+    """(the broad mod, which loads first; the narrow one, after), or None."""
+    if tiers.TIER_OUTPUT in (a.tier, b.tier):
+        return None
+    if not a.file_manifest or not b.file_manifest:
+        return None
+    small, big = ((a, b) if len(a.file_manifest) <= len(b.file_manifest)
+                  else (b, a))
+    if shared / len(small.file_manifest) < SCOPE_SHARE:
+        return None
+    if len(big.file_manifest) < SCOPE_RATIO * len(small.file_manifest):
+        return None
+    return big, small
+
+
+def conflict_edges(nodes, skip=frozenset()) -> list[DependencyEdge]:
+    """One edge per conflicting pair, by tier, surface rank, family, shape,
+    scope and finally the order the list already had.
+
+    ``skip`` holds sorted name pairs already settled by something better
+    than a file overlap - two builds of one SKSE plugin - which get no
+    edge here at all.
+    """
     by_file: dict[str, list] = defaultdict(list)
     for node in nodes:
         if node.is_tool:          # nothing it ships is loaded by the game
@@ -124,6 +163,8 @@ def conflict_edges(nodes) -> list[DependencyEdge]:
 
     out = []
     for pair, count in shared.items():
+        if pair in skip:
+            continue
         a, b = seen[pair]
         if a.tier != b.tier:
             lo, hi = (a, b) if a.tier < b.tier else (b, a)
@@ -132,8 +173,16 @@ def conflict_edges(nodes) -> list[DependencyEdge]:
             # are decides, not which was installed first.  See
             # tiers.surface_rank.
             lo, hi = (a, b) if a.subtier < b.subtier else (b, a)
+        elif tiers.variant_of(a.name, b.name):
+            # "Ruins Clutter Improved PBR" against "Ruins Clutter
+            # Improved": the same family, one of them rebuilt for the
+            # shaders. Installing both only makes sense if the rebuilt
+            # one is meant to show.
+            lo, hi = b, a
+        elif tiers.variant_of(b.name, a.name):
+            lo, hi = a, b
         else:
-            shape = _overlay(a, b, count)
+            shape = _overlay(a, b, count) or _scope(a, b, count)
             if shape is not None:
                 lo, hi = shape
             else:
@@ -273,8 +322,42 @@ def shader_edges(nodes) -> list[DependencyEdge]:
     return out
 
 
-def build_edges(nodes, needs=None) -> list[DependencyEdge]:
-    return (conflict_edges(nodes) + master_edges(nodes)
+def skse_edges(nodes, runtime=()) -> list[DependencyEdge]:
+    """Two mods shipping one SKSE plugin DLL, ordered by what the DLLs say.
+
+    Whichever copy wins is the only one SKSE sees, so the question is not
+    which mod is "more important" but which copy works. See skse.verdict.
+    """
+    from . import skse
+    holders: dict[str, list] = defaultdict(list)
+    for node in nodes:
+        if node.is_tool:
+            continue
+        for rel in getattr(node, "skse_dlls", None) or {}:
+            holders[rel].append(node)
+    out: list[DependencyEdge] = []
+    seen: set = set()
+    for rel in sorted(holders):
+        group = holders[rel]
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                pair = tuple(sorted((a.name, b.name)))
+                if pair in seen:
+                    continue
+                found = skse.verdict(a, b, runtime)
+                if found is None:
+                    continue
+                seen.add(pair)
+                first, after, reason, detail = found
+                out.append(DependencyEdge(first.name, after.name, reason,
+                                          detail))
+    return out
+
+
+def build_edges(nodes, needs=None, runtime=()) -> list[DependencyEdge]:
+    dll = skse_edges(nodes, runtime)
+    settled = frozenset(tuple(sorted((e.parent, e.child))) for e in dll)
+    return (conflict_edges(nodes, settled) + dll + master_edges(nodes)
             + asset_path_edges(nodes) + name_extension_edges(nodes)
             + requirement_edges(nodes, needs or {})
             + shader_edges(nodes))
@@ -528,11 +611,24 @@ def acyclic_edges(nodes, edges, decisions=None) -> tuple[
     # Both of these are read off disk rather than inferred, so they go in
     # first and a conflict edge yields to them.
     factual = {"master_requirement", "asset_path",
-               "shader_framework"}
+               "shader_framework", "skse_runtime"}
     masters_first = sorted(
         (e for e in edges if e.reason in factual),
         key=lambda e: (order.get(e.parent, 0), order.get(e.child, 0)))
     for edge in masters_first:
+        verdict = admit(edge)
+        if verdict == "kept":
+            kept.append(edge)
+        elif verdict == "cycle":
+            dropped.append(edge)
+
+    # Two builds of one DLL that both load: the newer is the better guess.
+    # It goes ahead of a requirement list, because "Detection Meter - AE
+    # Support" requires Detection Meter and ships nothing but an older copy
+    # of its DLL - the requirement says install both, the builds say which
+    # copy should be the one SKSE sees.
+    for edge in sorted((e for e in edges if e.reason == "skse_version"),
+                       key=lambda e: (e.parent, e.child)):
         verdict = admit(edge)
         if verdict == "kept":
             kept.append(edge)
@@ -565,7 +661,8 @@ def acyclic_edges(nodes, edges, decisions=None) -> tuple[
         head = edge.detail.split(" ", 1)[0]
         return int(head) if head.isdigit() else 0
 
-    ranked = factual | {"name_extension", "nexus_requirement"}
+    ranked = factual | {"name_extension", "nexus_requirement",
+                        "skse_version"}
     conflicts = sorted((e for e in edges if e.reason not in ranked),
                        key=lambda e: (-weight(e), e.parent, e.child))
     for edge in conflicts:
@@ -681,6 +778,11 @@ EDGE_WORDS = {
     "file_conflict": "{child} and {parent} share files, so one has to "
                      "override the other",
     "user_rule": "you decided this pair yourself",
+    "skse_runtime": "{child}'s copy of a shared SKSE plugin loads on this "
+                    "game version and {parent}'s does not",
+    "skse_version": "{child}'s copy of a shared SKSE plugin is a newer "
+                    "build than {parent}'s",
+    "shader_framework": "{child} uses shaders that {parent} provides",
 }
 
 
@@ -698,10 +800,12 @@ EDGE_WORDS = {
 # asset path out of a folder name: both say which mod a file belongs to,
 # and moving past one leaves a plugin without what it was built on. The
 # shader framework has to be in place before the code that draws a surface
-# runs at all. None of those is a preference to be overruled, so a freeze
-# that would break one is refused and the user told why.
+# runs at all. An SKSE plugin that only one copy of can load on this game
+# version is the same kind of fact. None of those is a preference to be
+# overruled, so a freeze that would break one is refused and the user told
+# why.
 HARD_REASONS = frozenset(("master_requirement", "asset_path",
-                          "shader_framework"))
+                          "shader_framework", "skse_runtime"))
 
 
 def freeze_blockers(order, edges, mod: str, target: str,

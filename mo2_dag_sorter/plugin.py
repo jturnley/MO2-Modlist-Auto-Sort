@@ -20,7 +20,7 @@ from . import (backups, category_ui, context_menu, dag,
                key_ui, nexus_api, resolve_ui, restore_ui, stacks,
                vault_key)
 
-VERSION = mobase.VersionInfo(0, 9, 9, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 10, 0, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 BREAK = chr(10)
 
@@ -229,7 +229,8 @@ class DagSorterTool(mobase.IPluginTool):
         try:
             result = pipeline.sort_profile(
                 root, profile, api_key=override_key or None, domain=domain,
-                cache_dir=cache_dir, resolver=resolver, decisions=rules, client=self._nexus())
+                cache_dir=cache_dir, resolver=resolver, decisions=rules, client=self._nexus(),
+                game_dir=self._game_dir())
         except dag.CycleError as exc:
             self._show_cycle(parent, exc)
             return
@@ -247,7 +248,8 @@ class DagSorterTool(mobase.IPluginTool):
                     result = pipeline.sort_profile(
                         root, profile, api_key=override_key or None,
                         domain=domain, cache_dir=cache_dir,
-                        resolver=None, decisions=rules, client=self._nexus())
+                        resolver=None, decisions=rules, client=self._nexus(),
+                        game_dir=self._game_dir())
                 except dag.CycleError as exc:
                     self._show_cycle(parent, exc)
                     return
@@ -265,7 +267,8 @@ class DagSorterTool(mobase.IPluginTool):
                     result = pipeline.sort_profile(
                         root, profile, api_key=override_key or None,
                         domain=domain, cache_dir=cache_dir,
-                        resolver=None, decisions=rules, client=self._nexus())
+                        resolver=None, decisions=rules, client=self._nexus(),
+                        game_dir=self._game_dir())
                 except dag.CycleError as exc:
                     self._show_cycle(parent, exc)
                     return
@@ -306,7 +309,8 @@ class DagSorterTool(mobase.IPluginTool):
         try:
             result = pipeline.sort_profile(
                 root, profile, api_key=None, domain=domain,
-                cache_dir=cache_dir, resolver=None, decisions=rules, client=self._nexus())
+                cache_dir=cache_dir, resolver=None, decisions=rules, client=self._nexus(),
+                game_dir=self._game_dir())
         except (dag.CycleError, OSError):
             return                     # never block an install
 
@@ -320,7 +324,8 @@ class DagSorterTool(mobase.IPluginTool):
                         result = pipeline.sort_profile(
                             root, profile, api_key=None, domain=domain,
                             cache_dir=cache_dir, resolver=None,
-                            decisions=rules, client=self._nexus())
+                            decisions=rules, client=self._nexus(),
+                            game_dir=self._game_dir())
                     except (dag.CycleError, OSError):
                         return
 
@@ -461,7 +466,8 @@ class DagSorterTool(mobase.IPluginTool):
                 domain=str(self._organizer.pluginSetting(
                     self.name(), "game_domain") or "skyrimspecialedition"),
                 cache_dir=self._organizer.pluginDataPath(),
-                resolver=None, decisions=self._rules(), client=self._nexus())
+                resolver=None, decisions=self._rules(), client=self._nexus(),
+                game_dir=self._game_dir())
         except (dag.CycleError, OSError) as exc:
             QMessageBox.warning(QApplication.activeWindow(),
                                 self.tr("Freeze order"), str(exc))
@@ -530,7 +536,8 @@ class DagSorterTool(mobase.IPluginTool):
                 result = pipeline.sort_profile(
                     root, profile, api_key=None, domain=domain,
                     cache_dir=cache_dir, resolver=None, decisions=rules,
-                    client=client, refresh=names)
+                    client=client, refresh=names,
+                    game_dir=self._game_dir())
         except (dag.CycleError, OSError) as exc:
             QMessageBox.warning(parent, self.tr("Auto-sort"), str(exc))
             return
@@ -548,7 +555,8 @@ class DagSorterTool(mobase.IPluginTool):
                         result = pipeline.sort_profile(
                             root, profile, api_key=None, domain=domain,
                             cache_dir=cache_dir, resolver=None,
-                            decisions=rules, client=client)
+                            decisions=rules, client=client,
+                            game_dir=self._game_dir())
                     except (dag.CycleError, OSError):
                         return
 
@@ -620,6 +628,11 @@ class DagSorterTool(mobase.IPluginTool):
             lines.append("FULLY OVERRIDDEN - these contribute nothing in the "
                          "new order:")
             lines += ["  " + item.headline for item in result.shadowed]
+        if result.problems:
+            lines.append("")
+            lines.append("WILL NOT LOAD, whatever the order - reported, "
+                         "nothing changed:")
+            lines += ["  " + item.headline for item in result.problems]
         if result.dropped:
             lines.append("")
             lines.append("Conflicts settled ({}):".format(len(result.dropped)))
@@ -634,6 +647,11 @@ class DagSorterTool(mobase.IPluginTool):
             summary += ("\n\n{} mod(s) end up fully overridden and "
                         "contribute nothing - see Details.").format(
                             len(result.shadowed))
+        if result.problems:
+            summary += ("\n\n{} plugin(s), archive(s) or SKSE DLL(s) will "
+                        "not load at all, whatever the order - see "
+                        "Details. Nothing has been changed about them."
+                        ).format(len(result.problems))
         box.setInformativeText(summary)
         box.setDetailedText("\n".join(lines))
         box.setStandardButtons(QMessageBox.StandardButton.Apply
@@ -656,6 +674,13 @@ class DagSorterTool(mobase.IPluginTool):
     def _instance_root(self) -> str:
         """The instance folder - one level above overwrite/."""
         return os.path.dirname(os.path.normpath(self._organizer.overwritePath()))
+
+    def _game_dir(self):
+        """The game folder MO2 is managing, or None to read it from the INI."""
+        try:
+            return self._organizer.managedGame().gameDirectory().absolutePath()
+        except Exception:
+            return None
 
 
 

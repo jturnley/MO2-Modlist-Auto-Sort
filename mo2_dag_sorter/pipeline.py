@@ -12,11 +12,11 @@ because something was moved above the Creation Club block.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from . import (dag, decisions as decisions_mod, duplicates, masters,
-               modlist, nexus, nexus_api,
-               requirements, scan, shadow, tiers, uncategorised)
+from . import (archives, dag, decisions as decisions_mod, duplicates,
+               loadcheck, masters, modlist, nexus, nexus_api,
+               requirements, scan, shadow, skse, tiers, uncategorised)
 
 
 @dataclass
@@ -32,6 +32,9 @@ class SortResult:
     unresolved: list       # dropped edges with no standing answer from the user
     unfrozen: list         # (mod, target) freezes a real dependency overrode
     report: str
+    # What will not load at all, whatever the order: loadcheck.Problem.
+    # Reported, never fixed.
+    problems: list = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
@@ -68,7 +71,7 @@ def sort_profile(mo2_root: str, profile: str = "Default",
                  cache_dir: str | None = None,
                  progress=None, resolver=None,
                  decisions=None, client=None,
-                 refresh=()) -> SortResult:
+                 refresh=(), game_dir=None) -> SortResult:
     """Run the whole sequence over one profile.
 
     ``resolver`` is an optional object with ``.resolve(ids)`` - inside MO2
@@ -90,6 +93,10 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     every mod in that graph would ask Nexus for hundreds of records it
     already had.  The user pointed at a few mods, so a few are re-asked.
 
+    ``game_dir`` is the game folder, which MO2 knows; without it the path
+    is read from ModOrganizer.ini. It supplies the game version an SKSE
+    plugin has to match and the plugins that load from outside MO2.
+
     This clears the two caches kept here.  The Extender keeps its own,
     shared with other plugins, which sits behind these - so a caller
     wanting genuinely fresh data should also wrap the call in
@@ -104,6 +111,20 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     nodes, header = modlist.read_modlist(list_path)               # [2]
     scan.populate(nodes, mods_dir, progress=progress)             # [3] [5]
     masters.populate(nodes, mods_dir)
+
+    # What the game will really load. An archive is opened only when a
+    # plugin of its name is active, so only those archives are read for
+    # the tiering below, and the rest are reported rather than trusted.
+    profile_dir = os.path.dirname(list_path)
+    game_dir = game_dir or loadcheck.game_directory(mo2_root)
+    data_dir = os.path.join(game_dir, "Data") if game_dir else None
+    runtime = skse.game_runtime(game_dir)
+    active = loadcheck.active_plugins(profile_dir)
+    listed = loadcheck.ini_archives(profile_dir)
+    loaded = loadcheck.loaded_plugins(nodes, active, data_dir,
+                                      os.path.join(mo2_root, "overwrite"))
+    archives.populate(nodes, mods_dir, loaded, listed)
+    skse.populate(nodes, mods_dir)
 
     cache = nexus.NexusCache(os.path.join(cache_dir, "nexus_cache.json"))
     ids = [n.nexus_id for n in nodes if n.nexus_id]
@@ -148,7 +169,7 @@ def sort_profile(mo2_root: str, profile: str = "Default",
 
     movable = [n for n in dag.sortable(nodes) if n.enabled]
     disabled = [n for n in dag.sortable(nodes) if not n.enabled]
-    edges = dag.build_edges(movable, needs)                       # [6]
+    edges = dag.build_edges(movable, needs, runtime)              # [6]
     if decisions is None:
         decisions = decisions_mod.Decisions(
             os.path.join(cache_dir, "user_rules.json"))
@@ -186,6 +207,10 @@ def sort_profile(mo2_root: str, profile: str = "Default",
             len(renamed),
             ", ".join("{} -> {}".format(a, b) for a, b in renamed[:3])
             + (", ..." if len(renamed) > 3 else ""))
+    problems = loadcheck.find(nodes, mods_dir, loaded, listed, runtime,
+                              active)
+    if problems:
+        report += "; {} thing(s) will not load".format(len(problems))
     # A pair the user has already ruled on is settled, not outstanding.
     unresolved = [e for e in dropped
                   if not decisions.known(e.parent, e.child)]
@@ -195,7 +220,7 @@ def sort_profile(mo2_root: str, profile: str = "Default",
                       uncategorised.find(final, tiers.TIER_OUTPUT), unresolved,
                       dag.unhonoured_freezes(ordered, decisions.freezes,
                                              decisions.freezes_below),
-                      report)
+                      report, problems)
 
 
 def _reassemble_disabled(sortable_nodes, ordered, disabled):

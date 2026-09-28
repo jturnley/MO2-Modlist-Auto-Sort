@@ -104,6 +104,12 @@ def main() -> int:
             len(result.shadowed)))
         for item in result.shadowed[:20]:
             print("  " + item.headline)
+    if result.problems:
+        print("")
+        print("will not load, whatever the order - reported, not fixed "
+              "({}):".format(len(result.problems)))
+        for problem in result.problems:
+            print("  " + problem.headline)
     if args.apply:
         print("backup:", pipeline.apply_result(args.root, args.profile, result))
     return 0

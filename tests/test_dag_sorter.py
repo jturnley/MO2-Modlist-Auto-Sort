@@ -1371,6 +1371,338 @@ check("a missing mod list is reported as such, not as success",
 check("a destroyed remembered window falls back to asking Qt",
       "_state[\"window\"] = None" in _menu_src, True)
 
+# --- 0.10: what the game will actually load ---------------------------------
+import struct as _struct
+from mo2_dag_sorter import archives, loadcheck, skse, pipeline as _pipeline
+
+_NUL = bytes(1)
+
+
+def _bsa(folders, version=105):
+    """A name-table-only Skyrim archive: {folder: [file, ...]}."""
+    names = list(folders)
+    record = 24 if version == 105 else 16
+    folder_len = sum(len(f) + 1 for f in names)
+    file_names = [n.encode() + _NUL for f in names for n in folders[f]]
+    files = sum(len(folders[f]) for f in names)
+    head = b"BSA" + _NUL + _struct.pack(
+        "<7I", version, 36, 0x3, len(names), files, folder_len,
+        sum(len(n) for n in file_names)) + _struct.pack("<HH", 0, 0)
+    recs = b""
+    for f in names:
+        recs += _struct.pack("<QI", 0, len(folders[f])) + bytes(record - 12)
+    blocks = b""
+    for f in names:
+        raw = f.encode() + _NUL
+        blocks += bytes((len(raw),)) + raw + bytes(16 * len(folders[f]))
+    return head + recs + blocks + b"".join(file_names)
+
+
+def _plugin(masters=()):
+    body = b""
+    for m in masters:
+        raw = m.encode() + _NUL
+        body += b"MAST" + _struct.pack("<H", len(raw)) + raw
+        body += b"DATA" + _struct.pack("<H", 8) + bytes(8)
+    return b"TES4" + _struct.pack("<I", len(body)) + bytes(16) + body
+
+
+def _pe(exports=(), plugin_version=0, independence=0, runtimes=(),
+        file_version=None):
+    """A PE32+ image with one section: exports, a version block, and
+    optionally a VS_FIXEDFILEINFO. Just enough for skse.read_dll."""
+    base_rva, raw_at = 0x1000, 0x200
+    sec = bytearray(0x1000)
+    names = list(exports)
+    n = len(names)
+    exp_dir = 0
+    funcs = 40
+    name_ptrs = funcs + 4 * n
+    ords = name_ptrs + 4 * n
+    strings = ords + 2 * n
+    at = strings
+    string_rva = []
+    for name in names:
+        raw = name.encode() + _NUL
+        sec[at:at + len(raw)] = raw
+        string_rva.append(base_rva + at)
+        at += len(raw)
+    block = (at + 15) // 16 * 16
+    data = _struct.pack("<II", 1, plugin_version) + bytes(764)
+    data += _struct.pack("<II", 0, independence)
+    data += b"".join(_struct.pack("<I", r) for r in runtimes)
+    sec[block:block + len(data)] = data
+    for i, name in enumerate(names):
+        target = block if name == "SKSEPlugin_Version" else 0x800
+        _struct.pack_into("<I", sec, funcs + 4 * i, base_rva + target)
+        _struct.pack_into("<I", sec, name_ptrs + 4 * i, string_rva[i])
+        _struct.pack_into("<H", sec, ords + 2 * i, i)
+    _struct.pack_into("<5I", sec, exp_dir + 20, n, n, base_rva + funcs,
+                      base_rva + name_ptrs, base_rva + ords)
+    res = 0xC00
+    if file_version:
+        a, b, c, d = file_version
+        sec[res:res + 16] = (bytes((0xBD, 0x04, 0xEF, 0xFE))
+                             + _struct.pack("<III", 0x10000,
+                                            (a << 16) | b, (c << 16) | d))
+
+    head = bytearray(raw_at)
+    head[0:2] = b"MZ"
+    _struct.pack_into("<I", head, 0x3C, 0x40)
+    head[0x40:0x44] = b"PE" + bytes(2)
+    _struct.pack_into("<HHIIIHH", head, 0x44, 0x8664, 1, 0, 0, 0, 240, 0)
+    opt = 0x58
+    _struct.pack_into("<H", head, opt, 0x20B)
+    dirs = opt + 112
+    _struct.pack_into("<II", head, dirs, base_rva, 40 + 10 * n)
+    if file_version:
+        _struct.pack_into("<II", head, dirs + 16, base_rva + res, 0x100)
+    table = opt + 240
+    head[table:table + 8] = b".rdata" + bytes(2)
+    _struct.pack_into("<IIII", head, table + 8, len(sec), base_rva,
+                      len(sec), raw_at)
+    return bytes(head) + bytes(sec)
+
+
+with _tempfile.TemporaryDirectory() as _folder:
+    _arc = os.path.join(_folder, "Quest.bsa")
+    with open(_arc, "wb") as _fh:
+        _fh.write(_bsa({"meshes/quest": ["door.nif", "wall.nif"],
+                        "sound/voice/quest.esp/guard": ["hello.fuz"]}))
+    check("an archive's name tables are read as lowercased folder/file paths",
+          archives.read_bsa_names(_arc),
+          ["meshes/quest/door.nif", "meshes/quest/wall.nif",
+           "sound/voice/quest.esp/guard/hello.fuz"])
+    _old = os.path.join(_folder, "Old.bsa")
+    with open(_old, "wb") as _fh:
+        _fh.write(_bsa({"textures/x": ["a.dds"]}, version=104))
+    check("the Oldrim-style 16-byte folder record is read too",
+          archives.read_bsa_names(_old), ["textures/x/a.dds"])
+    _junk = os.path.join(_folder, "Junk.bsa")
+    with open(_junk, "wb") as _fh:
+        _fh.write(b"BTDX" + bytes(40))
+    check("anything that is not a Skyrim BSA reads as empty, not an error",
+          archives.read_bsa_names(_junk), [])
+
+# The loader rule, and the tier fallback reading inside archives that load.
+check("a textures archive is loaded by the plugin of the plain name",
+      loadcheck.archive_loaders("Foo - Textures.bsa"),
+      ["foo.esp", "foo.esm", "foo.esl"])
+check("an archive loads when its plugin is loaded",
+      loadcheck.archive_loads("Foo.bsa", {"foo.esl"}, set()), True)
+check("an archive loads when the INI lists it, plugin or not",
+      loadcheck.archive_loads("Foo.bsa", set(), {"foo.bsa"}), True)
+check("an archive with neither does not load",
+      loadcheck.archive_loads("Foo.bsa", {"bar.esp"}, set()), False)
+
+with _tempfile.TemporaryDirectory() as _mods:
+    os.makedirs(os.path.join(_mods, "Quest Mod"))
+    with open(os.path.join(_mods, "Quest Mod", "Quest.bsa"), "wb") as _fh:
+        _fh.write(_bsa({"meshes/quest": ["door.nif"]}))
+    _q = node("Quest Mod", 0, files=["quest.esp", "quest.bsa"],
+              plugins=["quest.esp"])
+    archives.populate([_q], _mods, loaded={"quest.esp"}, listed=())
+    check("an archive whose plugin loads is read", _q.archive_manifest,
+          ["meshes/quest/door.nif"])
+    _tier, _why = tiers._heuristic_tier(_q)
+    check("a plugin with an archive beside it is placed by what is packed",
+          (_tier, _why.endswith("(read from inside its .bsa)")), (3, True))
+    archives.populate([_q], _mods, loaded={"other.esp"}, listed=())
+    check("an archive nothing loads is not read at all",
+          _q.archive_manifest, [])
+    check("and a plugin beside an unreadable archive is still not a patch",
+          tiers._heuristic_tier(_q)[0] != 5, True)
+
+# loadcheck.find: the three reports, and the generous reading of "available".
+with _tempfile.TemporaryDirectory() as _root:
+    _mods = os.path.join(_root, "mods")
+    for _name, _files in (
+            ("Needs Base", {"child.esp": _plugin(["base.esm", "update.esm"])}),
+            ("Base Mod", {"base.esm": _plugin()}),
+            ("Loose Archive", {"Stray.bsa": _bsa({"textures": ["t.dds"]}),
+                               "Kept.bsa": _bsa({"textures": ["k.dds"]}),
+                               "kept.esp": _plugin()})):
+        os.makedirs(os.path.join(_mods, _name))
+        for _f, _raw in _files.items():
+            with open(os.path.join(_mods, _name, _f), "wb") as _fh:
+                _fh.write(_raw)
+    _data = os.path.join(_root, "game", "Data")
+    os.makedirs(_data)
+    open(os.path.join(_data, "Update.esm"), "wb").close()
+    _nodes = [node("Needs Base", 0, files=["child.esp"], plugins=["child.esp"]),
+              node("Base Mod", 1, files=["base.esm"], plugins=["base.esm"],
+                   prefix="-"),
+              node("Loose Archive", 2, files=["stray.bsa", "kept.bsa",
+                                              "kept.esp"],
+                   plugins=["kept.esp"])]
+    _active = {"child.esp", "kept.esp"}
+    _loaded = loadcheck.loaded_plugins(_nodes, _active, _data, None)
+    check("the game's Data folder counts as loaded - Update.esm is not "
+          "missing", "update.esm" in _loaded, True)
+    _found = loadcheck.find(_nodes, _mods, _loaded, set(), (), _active)
+    check("a master in a disabled mod, and an archive with no plugin, are "
+          "reported", sorted((p.kind, p.item) for p in _found),
+          [("missing_master", "child.esp"), ("orphan_archive", "stray.bsa")])
+    check("the report names the mod holding the missing master",
+          "Base Mod" in [p for p in _found
+                         if p.kind == "missing_master"][0].detail, True)
+
+with _tempfile.TemporaryDirectory() as _root:
+    _bs = chr(92)
+    with io.open(os.path.join(_root, "ModOrganizer.ini"), "w",
+                 encoding="utf-8") as _fh:
+        _fh.write("[General]" + chr(10) + "gamePath=@ByteArray(D:" + _bs * 2
+                  + "Games" + _bs * 2 + "Skyrim)" + chr(10))
+    check("the game path is unwrapped from Qt's @ByteArray form",
+          loadcheck.game_directory(_root), "D:" + _bs + "Games" + _bs + "Skyrim")
+
+# SKSE: the export table and the version block are the facts.
+_AE = (1, 6, 1170, 0)
+_SE = (1, 5, 97, 0)
+check("the runtime is packed the way SKSE packs it",
+      skse.pack_runtime(_AE), (1 << 24) | (6 << 16) | (1170 << 4))
+check("a Query-only plugin loads on 1.5.97 and not on 1.6",
+      (skse.DllInfo(query=True).loads_on(_SE),
+       skse.DllInfo(query=True).loads_on(_AE)), (True, False))
+check("an address-library plugin loads on any 1.6",
+      skse.DllInfo(version_data=True,
+                   independence=skse.ADDRESS_LIBRARY).loads_on(_AE), True)
+check("a post-629 plugin does not load before 1.6.629",
+      skse.DllInfo(version_data=True,
+                   independence=skse.ADDRESS_LIBRARY
+                   | skse.STRUCTS_POST_629).loads_on((1, 6, 353)), False)
+check("a pinned plugin loads only on the runtime it names",
+      (skse.DllInfo(version_data=True,
+                    runtimes=(skse.pack_runtime(_AE),)).loads_on(_AE),
+       skse.DllInfo(version_data=True,
+                    runtimes=(skse.pack_runtime((1, 6, 640)),)).loads_on(_AE)),
+      (True, False))
+check("a DLL exporting nothing SKSE looks for says nothing",
+      skse.DllInfo().loads_on(_AE), None)
+
+with _tempfile.TemporaryDirectory() as _folder:
+    _dll = os.path.join(_folder, "x.dll")
+    with open(_dll, "wb") as _fh:
+        _fh.write(_pe(["SKSEPlugin_Load", "SKSEPlugin_Version"],
+                      plugin_version=0x010203, independence=skse.ADDRESS_LIBRARY,
+                      file_version=(1, 2, 3, 0)))
+    _info = skse.read_dll(_dll)
+    check("an AE plugin is read off its export table and version block",
+          (_info.query, _info.version_data, _info.independence,
+           _info.plugin_version, _info.file_version),
+          (False, True, skse.ADDRESS_LIBRARY, 0x010203, (1, 2, 3, 0)))
+    with open(_dll, "wb") as _fh:
+        _fh.write(_pe(["SKSEPlugin_Load", "SKSEPlugin_Query"]))
+    _info = skse.read_dll(_dll)
+    check("an SE-era plugin exports only the query",
+          (_info.query, _info.version_data, _info.loads_on(_AE)),
+          (True, False, False))
+    with open(_dll, "wb") as _fh:
+        _fh.write(b"not a dll")
+    check("a file that is not a PE image is not a plugin",
+          skse.read_dll(_dll), None)
+
+
+def _dll_node(name, index, info, files=()):
+    n = node(name, index, tier=0,
+             files=["skse/plugins/meter.dll"] + list(files))
+    n.skse_dlls = {"skse/plugins/meter.dll": info}
+    return n
+
+
+_new = skse.DllInfo(version_data=True, independence=skse.ADDRESS_LIBRARY,
+                    file_version=(1, 1, 1, 0))
+_older = skse.DllInfo(version_data=True, independence=skse.ADDRESS_LIBRARY,
+                      file_version=(1, 0, 8, 0))
+_se_only = skse.DllInfo(query=True, file_version=(9, 0, 0, 0))
+_base = _dll_node("Meter", 0, _new)
+_patch = _dll_node("Meter - AE Support", 1, _older)
+_edges = dag.skse_edges([_base, _patch], _AE)
+check("of two builds that both load, the newer one wins",
+      [(e.parent, e.child, e.reason) for e in _edges],
+      [("Meter - AE Support", "Meter", "skse_version")])
+_legacy = _dll_node("Meter SE Legacy", 2, _se_only)
+_edges = dag.skse_edges([_base, _legacy], _AE)
+check("a copy that loads beats a newer one that cannot",
+      [(e.parent, e.child, e.reason) for e in _edges],
+      [("Meter SE Legacy", "Meter", "skse_runtime")])
+_all = dag.build_edges([_base, _patch], None, _AE)
+check("a pair the DLLs settled gets no file_conflict edge as well",
+      sorted(e.reason for e in _all
+             if {e.parent, e.child} == {"Meter", "Meter - AE Support"}),
+      ["skse_version"])
+_req = DependencyEdge("Meter", "Meter - AE Support", "nexus_requirement", "")
+_kept, _dropped = dag.acyclic_edges(
+    [_base, _patch], dag.skse_edges([_base, _patch], _AE) + [_req])
+check("a newer build outranks a requirement list",
+      ([(e.parent, e.child) for e in _kept],
+       [(e.parent, e.child) for e in _dropped]),
+      ([("Meter - AE Support", "Meter")], [("Meter", "Meter - AE Support")]))
+check("a runtime mismatch is something a freeze cannot overrule",
+      "skse_runtime" in dag.HARD_REASONS, True)
+check("a runtime mismatch has words for the freeze dialog",
+      "skse_runtime" in dag.EDGE_WORDS and "skse_version" in dag.EDGE_WORDS,
+      True)
+_lone = _dll_node("Meter Old Only", 0, skse.DllInfo(query=True))
+check("a DLL path no copy of which loads is reported",
+      [p.kind for p in loadcheck._runtime_problems([_lone], _AE)],
+      ["skse_runtime"])
+check("but not when one copy loads",
+      loadcheck._runtime_problems([_lone, _base], _AE), [])
+
+# Family variants and scope.
+check("a PBR rebuild is a variant of the plain mod of the same name",
+      tiers.variant_of("Ruins Clutter Improved PBR", "Ruins Clutter Improved"),
+      True)
+check("a PBR mod of an unrelated name is not",
+      tiers.variant_of("Vanilla PBR AIO", "Ruins Clutter Improved"), False)
+_plain = node("Ruins Clutter Improved", 0, files=["textures/r/a.dds"] * 1)
+_pbr = node("Ruins Clutter Improved PBR", 1, files=["textures/r/a.dds"])
+_plain.original_index, _pbr.original_index = 1, 0     # installed backwards
+check("the variant wins over its plain family member, whatever the order",
+      [(e.parent, e.child) for e in dag.conflict_edges([_plain, _pbr])],
+      [("Ruins Clutter Improved", "Ruins Clutter Improved PBR")])
+
+_big = node("Whole Game Retexture", 0,
+            files=["textures/t/{}.dds".format(i) for i in range(400)])
+_narrow = node("Barrels Only", 1,
+               files=["textures/t/{}.dds".format(i) for i in range(30)]
+               + ["textures/own/{}.dds".format(i) for i in range(10)])
+_big.original_index, _narrow.original_index = 1, 0
+check("a mod aimed at one corner of a much bigger one wins that corner",
+      [(e.parent, e.child) for e in dag.conflict_edges([_big, _narrow])],
+      [("Whole Game Retexture", "Barrels Only")])
+_output = node("Barrels Only", 1, tier=tiers.TIER_OUTPUT,
+               files=_narrow.file_manifest)
+_big_out = node("Whole Game Retexture", 0, tier=tiers.TIER_OUTPUT,
+                files=_big.file_manifest)
+check("generated output is never re-ordered by scope",
+      dag._scope(_big_out, _output, 30), None)
+_spread = node("Mixed Pack", 1,
+               files=["textures/t/{}.dds".format(i) for i in range(10)]
+               + ["textures/m/{}.dds".format(i) for i in range(30)])
+check("a mod that mostly ships its own files is not aimed at anything",
+      dag._scope(_big, _spread, 10), None)
+
+_pipe_src = io.open(os.path.join(os.path.dirname(os.path.abspath(
+    _pipeline.__file__)), "pipeline.py"), encoding="utf-8").read()
+check("archives are read before the tiers are worked out",
+      _pipe_src.index("archives.populate(") < _pipe_src.index("tiers.apply("),
+      True)
+check("what will not load is on the result", "problems" in
+      _pipeline.SortResult.__dataclass_fields__, True)
+_plugin_src = io.open(os.path.join(os.path.dirname(os.path.abspath(
+    _pipeline.__file__)), "plugin.py"), encoding="utf-8").read()
+check("every sort from inside MO2 is given MO2's own game folder",
+      _plugin_src.count("pipeline.sort_profile("),
+      _plugin_src.count("game_dir=self._game_dir()"))
+check("the confirm dialog lists what will not load",
+      "for item in result.problems" in _plugin_src, True)
+_cli_src = io.open(os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(_pipeline.__file__))), "tools", "dag_sort_cli.py"),
+    encoding="utf-8").read()
+check("so does the command line", "result.problems" in _cli_src, True)
+
 
 if failures:
     print("FAILED")

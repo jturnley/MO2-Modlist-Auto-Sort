@@ -20,6 +20,7 @@ Then — and this is the part that matters — it [b]tells you what it did[/b]. 
 [*][b]What kind of mod it is.[/b] Textures, meshes, animations, patches and so on each have a place in the stack. Fixes go near the bottom so they land on top of what they fix.
 [*][b]What mods say they need.[/b] It reads the Requirements list off each mod's Nexus page. If A requires B, that is a real relationship and it is used as one.
 [*][b]What actually collides.[/b] It looks at which mods overwrite the same files, because two mods that never touch each other do not need an opinion about their order.
+[*][b]What the files themselves say.[/b] Two mods shipping the same SKSE plugin are ordered so the copy that works on your game version wins, and after that the newer build. A mod packed into a .bsa is judged by what is inside the archive, not by the bare plugin beside it.
 [*][b]What you already decided.[/b] Your own choices are remembered and are never quietly overruled on a later sort.
 [/list]
 
@@ -31,6 +32,7 @@ Then — and this is the part that matters — it [b]tells you what it did[/b]. 
 [*][b]Nothing moves without a backup.[/b] Every sort writes a restorable snapshot first.
 [*][b]Tools → Undo / Restore Mod List[/b] puts the previous order back.
 [*][b]Conflicts it cannot settle are brought to you[/b] rather than guessed at.
+[*][b]It tells you what will not load at all[/b] — a missing master, an archive with no plugin to open it, an SKSE plugin built for another game version — and leaves fixing it to you. It never disables, moves or deletes anything on its own judgement.
 [*][b]"The list is already in order"[/b] is a perfectly normal result. It does not move things to look busy.
 [/list]
 
