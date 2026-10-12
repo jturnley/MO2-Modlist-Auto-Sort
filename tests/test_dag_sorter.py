@@ -1747,6 +1747,30 @@ try:
 finally:
     _req._post_direct = _saved
 
+# A Python with no SSL at all: the sorter still loads and still sorts.
+import subprocess as _subprocess
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_probe = (
+    "import sys; sys.modules['ssl'] = None; sys.modules['_ssl'] = None\n"
+    "sys.path.insert(0, {!r})\n"
+    "from mo2_dag_sorter import pipeline, requirements, tls\n"
+    "print(tls.available())\n"
+    "requirements._post_direct = lambda *a, **k: (_ for _ in ()).throw(\n"
+    "    __import__('urllib.error').error.URLError('unknown url type: https'))\n"
+    "print(requirements.game_id('skyrimspecialedition'))\n"
+    "try:\n"
+    "    requirements._post('{{ x }}')\n"
+    "except requirements.Unavailable as exc:\n"
+    "    print(exc)\n"
+).format(_root)
+_out = _subprocess.run([sys.executable, "-c", _probe], capture_output=True,
+                       text=True, timeout=60)
+_lines = _out.stdout.splitlines()
+check("the sorter loads on a Python with no SSL, and falls back offline",
+      (_out.returncode, _lines[:2]), (0, ["False", "None"]))
+check("and its report says the SSL module is what is missing",
+      len(_lines) > 2 and "could not load its SSL module" in _lines[2], True)
+
 
 if failures:
     print("FAILED")

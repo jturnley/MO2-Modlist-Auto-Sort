@@ -86,6 +86,8 @@ def _post(query: str, timeout: int = 30, client=None) -> dict:
     try:
         return _post_direct(query, timeout)
     except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
+        if not tls.available():
+            raise Unavailable(tls.NO_SSL)
         problem = tls.certificate_problem(exc)
         if problem:
             raise Unavailable("this PC could not verify Nexus's certificate "
