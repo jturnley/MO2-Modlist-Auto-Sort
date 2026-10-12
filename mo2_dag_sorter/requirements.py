@@ -31,6 +31,8 @@ import time
 import urllib.error
 import urllib.request
 
+from . import tls
+
 ENDPOINT = "https://api.nexusmods.com/v2/graphql"
 BATCH = 20                      # mods per request; the server accepts aliases
 GIVE_UP = 3                     # consecutive failed batches before stopping
@@ -84,6 +86,11 @@ def _post(query: str, timeout: int = 30, client=None) -> dict:
     try:
         return _post_direct(query, timeout)
     except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
+        problem = tls.certificate_problem(exc)
+        if problem:
+            raise Unavailable("this PC could not verify Nexus's certificate "
+                              "({}) - Windows' certificate store, not the "
+                              "connection".format(problem))
         raise Unavailable("{}: {}".format(type(exc).__name__, exc))
 
 
@@ -94,7 +101,8 @@ def _post_direct(query: str, timeout: int = 30) -> dict:
         headers={"Content-Type": "application/json",
                  "Accept": "application/json",
                  "User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as fh:
+    with urllib.request.urlopen(req, timeout=timeout,
+                                context=tls.context()) as fh:
         payload = json.load(fh)
     errors = payload.get("errors")
     if errors:
@@ -115,7 +123,12 @@ def game_id(domain: str, client=None) -> int | None:
             return None
     try:
         payload = _post('{{ game(domainName: "{}") {{ id }} }}'.format(domain))
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+    except (Unavailable, urllib.error.URLError, OSError, ValueError,
+            TimeoutError):
+        # _post reports every failure as Unavailable. Catching only the
+        # urllib errors here let a dead connection - or a PC that cannot
+        # verify Nexus's certificate - crash the whole sort instead of
+        # running it offline from the cache.
         return None
     game = (payload.get("data") or {}).get("game") or {}
     return game.get("id")

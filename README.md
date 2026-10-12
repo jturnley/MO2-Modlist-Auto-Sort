@@ -87,6 +87,7 @@ mo2_dag_sorter/       the plugin - copy this folder into MO2/plugins/
   dag.py              edges, cycles, Kahn's algorithm, freezes
   tiers.py            what a mod is, and how sure we are
   scan.py             the file tree, and what makes something a tool
+  tls.py              HTTPS for the direct path, same roots as the Extender
   archives.py         .bsa name tables, for tiering only
   skse.py             what an SKSE DLL says about itself
   loadcheck.py        what will not load - reported, never acted on

@@ -21,6 +21,8 @@ import time
 import urllib.error
 import urllib.request
 
+from . import tls
+
 API_ROOT = "https://api.nexusmods.com/v1/games"
 USER_AGENT = "MO2-DAG-Sorter/1.0"
 TIMEOUT = 8.0
@@ -134,7 +136,8 @@ def _request(url: str, api_key: str):
     request = urllib.request.Request(url, headers={
         "apikey": api_key, "User-Agent": USER_AGENT,
         "Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+    with urllib.request.urlopen(request, timeout=TIMEOUT,
+                                context=tls.context()) as response:
         payload = json.load(response)
         try:
             remaining = int(response.headers.get("x-rl-hourly-remaining", -1))

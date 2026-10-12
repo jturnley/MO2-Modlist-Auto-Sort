@@ -1703,6 +1703,50 @@ _cli_src = io.open(os.path.join(os.path.dirname(os.path.dirname(
     encoding="utf-8").read()
 check("so does the command line", "result.problems" in _cli_src, True)
 
+# --- 0.10.1: HTTPS that survives a PC's certificate store -------------------
+import hashlib as _hashlib
+import ssl as _ssl
+import urllib.error as _urlerror
+from mo2_dag_sorter import requirements as _req, tls as _tls
+
+check("the shipped root is ISRG Root X1, by its published fingerprint",
+      _hashlib.sha256(_ssl.PEM_cert_to_DER_cert(_tls.ISRG_ROOT_X1))
+      .hexdigest(), "96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6")
+check("verification is never switched off",
+      (_tls.context().verify_mode, _tls.context().check_hostname),
+      (_ssl.CERT_REQUIRED, True))
+
+_expired = _ssl.SSLCertVerificationError(1, "certificate verify failed")
+_expired.verify_message = "certificate has expired"
+
+
+def _cert_fails(*_a, **_k):
+    raise _urlerror.URLError(_expired)
+
+
+def _line_drops(*_a, **_k):
+    raise _urlerror.URLError("connection refused")
+
+
+_saved = _req._post_direct
+try:
+    _req._post_direct = _cert_fails
+    check("with no Extender, a certificate failure leaves the sort offline "
+          "instead of crashing it", _req.game_id("skyrimspecialedition"), None)
+    try:
+        _req._post("{ x }")
+        _said = ""
+    except _req.Unavailable as _exc:
+        _said = str(_exc)
+    check("and the report says it was the certificate, not the line",
+          ("certificate has expired" in _said, "not the connection" in _said),
+          (True, True))
+    _req._post_direct = _line_drops
+    check("a dropped line falls back offline too",
+          _req.game_id("skyrimspecialedition"), None)
+finally:
+    _req._post_direct = _saved
+
 
 if failures:
     print("FAILED")
