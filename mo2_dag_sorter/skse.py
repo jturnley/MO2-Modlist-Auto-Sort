@@ -56,6 +56,7 @@ class DllInfo:
     file_version: tuple = ()
     names_address_library: bool = False   # the file name is in the DLL
     skse_required: int = 0         # oldest SKSE it accepts, packed; 0 = any
+    plugin_name: str = ""          # the name in its version block
 
     def needs_newer_skse(self, skse_version) -> bool:
         """Would SKSE ``skse_version`` refuse this plugin as too old for it?
@@ -138,6 +139,28 @@ def address_library_file(runtime) -> str | None:
 
 # The SKSE plugin that makes ESL-flagged and .esl plugins work on VR.
 VR_ESL_SUPPORT = DLL_DIR + "skyrimvresl.dll"
+
+
+# Backported Extended ESL Support: lets game versions before 1.6.1130 read
+# plugins saved with header version 1.71. Matched loosely, on the DLL's file
+# name or the name in its version block, because no single spelling of
+# either has been confirmed here.
+BEES_NAME = re.compile(r"(?i)backported.*esl|(?:^|[^a-z])bees(?:[^a-z]|$)")
+
+EXTENDED_HEADER = 1.705          # 1.71, allowing for float rounding
+EXTENDED_HEADER_RUNTIME = (1, 6, 1130)
+
+
+def is_bees(dll_name: str, info=None) -> bool:
+    stem = os.path.splitext(os.path.basename(dll_name or ""))[0]
+    name = getattr(info, "plugin_name", "") or ""
+    return bool(BEES_NAME.search(stem) or BEES_NAME.search(name))
+
+
+def needs_bees(runtime) -> bool:
+    """Does this game version need BEES to read a 1.71 plugin header?"""
+    return (bool(runtime) and not is_vr(runtime)
+            and tuple(runtime[:3]) < EXTENDED_HEADER_RUNTIME)
 
 
 def is_vr(runtime) -> bool:
@@ -256,6 +279,7 @@ def _version_block(data: bytes, at: int, info: DllInfo) -> None:
         u32 compatibleVersions[16] (zero-terminated) | u32 seVersionRequired
     """
     info.plugin_version = struct.unpack_from("<I", data, at + 4)[0]
+    info.plugin_name = _cstring(data, at + 8)
     tail = at + 8 + 256 + 256 + 252
     info.independence = struct.unpack_from("<I", data, tail + 4)[0]
     info.skse_required = struct.unpack_from("<I", data, tail + 8 + 64)[0]
@@ -330,6 +354,9 @@ def skse_install(game_dir, runtime) -> SkseInstall | None:
 
 _cache: dict = {}
 _dirty = False
+# Raised whenever DllInfo learns a new fact, so entries saved without it
+# are read again rather than trusted.
+CACHE_VERSION = 2
 
 
 def read_dll_cached(path: str) -> DllInfo | None:
@@ -356,6 +383,8 @@ def load_cache(path: str) -> None:
             saved = json.load(fh)
     except (OSError, ValueError):
         return
+    if saved.get("version") != CACHE_VERSION:
+        return                          # read by an older build: start over
     fields = {f.name for f in dataclasses.fields(DllInfo)}
     for key, (stamp, raw) in (saved.get("dlls") or {}).items():
         if key in _cache:
@@ -378,7 +407,7 @@ def save_cache(path: str) -> None:
     try:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"version": 1, "dlls": out}, fh)
+            json.dump({"version": CACHE_VERSION, "dlls": out}, fh)
         os.replace(tmp, path)
         _dirty = False
     except OSError:

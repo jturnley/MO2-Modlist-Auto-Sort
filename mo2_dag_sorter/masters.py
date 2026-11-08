@@ -21,6 +21,19 @@ import struct
 PLUGIN_EXTS = (".esp", ".esm", ".esl")
 
 
+def header_version(path: str) -> float | None:
+    """The version in a plugin's HEDR - 1.7 for SE, 1.71 for plugins saved
+    by the Creation Kit for 1.6.1130 and later - or None if unreadable."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(34)
+    except OSError:
+        return None
+    if len(head) < 34 or head[:4] != b"TES4" or head[24:28] != b"HEDR":
+        return None
+    return struct.unpack_from("<f", head, 30)[0]
+
+
 def read_masters(path: str) -> list[str]:
     try:
         with open(path, "rb") as fh:

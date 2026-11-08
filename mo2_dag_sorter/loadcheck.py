@@ -38,7 +38,7 @@ class Problem:
     mod: str
     item: str          # the plugin, archive or DLL that will not load
     kind: str          # "missing_master" | "orphan_archive" | "skse_runtime"
-                       # | "address_library" | "vr_esl"
+                       # | "address_library" | "vr_esl" | "header_171"
     detail: str
 
     @property
@@ -251,7 +251,71 @@ def find(nodes, mods_dir: str, loaded: set, listed: set,
                                          overwrite_dir, mods_dir))
     out.extend(_vr_esl_problems(live, runtime, active, data_dir,
                                 overwrite_dir, mods_dir))
+    out.extend(_header_problems(live, winner, in_overwrite, runtime, active,
+                                mods_dir, data_dir, overwrite_dir))
     return out
+
+
+def extended_header_problem(plugins, runtime, bees: bool) -> list[Problem]:
+    """Plugins saved with header 1.71 on a game version that needs BEES.
+
+    ``plugins`` is {plugin name: path to the copy that loads}. The Creation
+    Kit for 1.6.1130 saves version 1.71 headers, with a wider ESL range;
+    earlier game versions read them only with Backported Extended ESL
+    Support. Shared by the sort's report and the check before launch.
+    """
+    from . import masters as masters_mod, skse
+    if bees or not skse.needs_bees(runtime):
+        return []
+    newer = sorted(name for name, path in plugins.items()
+                   if (masters_mod.header_version(path) or 0)
+                   >= skse.EXTENDED_HEADER)
+    if not newer:
+        return []
+    return [Problem(
+        "{} plugins".format(len(newer)), "header version 1.71", "header_171",
+        "saved by the Creation Kit for game version 1.6.1130 or later. "
+        "Version {} reads them only with 'Backported Extended ESL Support' "
+        "(an SKSE plugin), which is not installed, so they may not load "
+        "correctly: {}".format(".".join(str(v) for v in runtime[:3]),
+                               _named(newer)))]
+
+
+def _bees_installed(live, data_dir, overwrite_dir, runtime=()) -> bool:
+    """Is a BEES that can actually load installed? A copy built for
+    another game version helps nobody."""
+    from . import skse
+    for node in live:
+        for rel, info in (getattr(node, "skse_dlls", None) or {}).items():
+            if skse.is_bees(rel, info) and info.loads_on(runtime) is not False:
+                return True
+    for folder in (data_dir, overwrite_dir):
+        plugins = os.path.join(folder, "SKSE", "Plugins") if folder else None
+        try:
+            names = os.listdir(plugins) if plugins else []
+        except OSError:
+            names = []
+        if any(n.lower().endswith(".dll") and skse.is_bees(n) for n in names):
+            return True
+    return False
+
+
+def _header_problems(live, winner, in_overwrite, runtime, active, mods_dir,
+                     data_dir, overwrite_dir) -> list[Problem]:
+    from . import skse
+    if not skse.needs_bees(runtime) or active is None or not mods_dir:
+        return []                       # a missed warning, never a false one
+    plugins = {}
+    for plugin, node in winner.items():
+        if plugin not in active:
+            continue
+        if plugin in in_overwrite:
+            plugins[plugin] = os.path.join(overwrite_dir, plugin)
+        else:
+            plugins[plugin] = os.path.join(mods_dir, node.name, plugin)
+    return extended_header_problem(
+        plugins, runtime, _bees_installed(live, data_dir, overwrite_dir,
+                                          runtime))
 
 
 LISTED = 5

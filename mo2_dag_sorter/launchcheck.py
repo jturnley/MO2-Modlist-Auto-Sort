@@ -117,12 +117,29 @@ def _skse_problems(runtime, install) -> list[Problem]:
     return [Problem("the game folder", install.wanted, "skse_missing", detail)]
 
 
-def check(mods, game_dir, overwrite_dir=None) -> list[Problem]:
+def winning_plugins(mods, data_dir=None, overwrite_dir=None) -> dict:
+    """{plugin name: path} for the copy of each root plugin that loads."""
+    out = {}
+    layers = [data_dir] + [f for _n, f in mods] + [overwrite_dir]
+    for folder in layers:
+        try:
+            names = os.listdir(folder) if folder else []
+        except OSError:
+            continue
+        for name in names:
+            if name.lower().endswith((".esp", ".esm", ".esl")):
+                out[name.lower()] = os.path.join(folder, name)
+    return out
+
+
+def check(mods, game_dir, overwrite_dir=None, active=None) -> list[Problem]:
     """Everything SKSE would refuse in this setup.
 
     ``mods`` is [(mod name, folder)] for the enabled mods, lowest priority
-    first. An unknown game version means nothing can be judged, and then
-    nothing is claimed.
+    first. ``active`` is the set of ticked plugins, lowercased; without it
+    plugin headers are not judged, because an unticked plugin's header
+    cannot matter. An unknown game version means nothing can be judged,
+    and then nothing is claimed.
     """
     runtime = skse.game_runtime(game_dir)
     if not runtime:
@@ -131,9 +148,12 @@ def check(mods, game_dir, overwrite_dir=None) -> list[Problem]:
     install = skse.skse_install(game_dir, runtime)
     out = _skse_problems(runtime, install)
     users = []
+    bees = False
     for name, (where, path) in sorted(
             winning_dlls(mods, data_dir, overwrite_dir).items()):
         info = skse.read_dll_cached(path)
+        bees = bees or (skse.is_bees(name, info) and info is not None
+                        and info.loads_on(runtime) is not False)
         out.extend(_judge(where, name, info, runtime, install))
         if info is not None and info.address_library \
                 and info.loads_on(runtime) is not False:
@@ -148,6 +168,11 @@ def check(mods, game_dir, overwrite_dir=None) -> list[Problem]:
             "{} SKSE plugin(s) need Address Library for game version {} and "
             "it is not installed, so none of them will load ({})".format(
                 len(users), _dotted(runtime[:3]), shown)))
+    if active is not None and skse.needs_bees(runtime):
+        from .loadcheck import extended_header_problem
+        plugins = {name: path for name, path in winning_plugins(
+            mods, data_dir, overwrite_dir).items() if name in active}
+        out.extend(extended_header_problem(plugins, runtime, bees))
     return out
 
 

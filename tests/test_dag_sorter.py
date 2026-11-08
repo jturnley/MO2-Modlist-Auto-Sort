@@ -2269,6 +2269,107 @@ check("the warning offers to launch anyway, defaults to cancel, and can be "
 check("and it can be switched off", '"check_skse_plugins"' in _plugin_src5,
       True)
 
+# --- 0.10.8: header 1.71 plugins on game versions before 1.6.1130 ----------
+from mo2_dag_sorter import masters as _masters
+
+
+def _hedr(version):
+    """A TES4 record whose HEDR carries ``version``."""
+    body = b"HEDR" + _struct.pack("<H", 12) + _struct.pack("<fII", version, 0,
+                                                             0x800)
+    return (b"TES4" + _struct.pack("<IIIII", len(body), 0, 0, 0, 0)[:20]
+            + body)
+
+
+with _tempfile.TemporaryDirectory() as _folder:
+    _new_p = os.path.join(_folder, "new.esp")
+    _old_p = os.path.join(_folder, "old.esp")
+    _write(_new_p, _hedr(1.71))
+    _write(_old_p, _hedr(1.70))
+    check("a plugin's header version is read from its HEDR",
+          (round(_masters.header_version(_new_p), 2),
+           round(_masters.header_version(_old_p), 2),
+           _masters.header_version(os.path.join(_folder, "missing.esp"))),
+          (1.71, 1.7, None))
+    _pair = {"new.esp": _new_p, "old.esp": _old_p}
+    _found = loadcheck.extended_header_problem(_pair, _SE, bees=False)
+    check("on 1.5.97 without BEES, the 1.71 plugin is reported and the 1.70 "
+          "one is not", [(p.kind, "new.esp" in p.detail, "old.esp" in p.detail)
+                         for p in _found], [("header_171", True, False)])
+    check("with BEES installed, nothing is reported",
+          loadcheck.extended_header_problem(_pair, _SE, bees=True), [])
+    check("from 1.6.1130 on, the game reads 1.71 itself",
+          loadcheck.extended_header_problem(_pair, _AE, bees=False), [])
+
+check("which game versions need BEES",
+      [skse.needs_bees(r) for r in ((1, 5, 97, 0), (1, 6, 640, 0),
+                                    (1, 6, 1130, 0), _AE, _VR, ())],
+      [True, True, False, False, False, False])
+check("BEES is recognised by its DLL name, and Beeing Female is not BEES",
+      [skse.is_bees(n) for n in ("BackportedESLSupport.dll", "BEES.dll",
+                                 "BeeingFemale.dll", "po3_Tweaks.dll")],
+      [True, True, False, False])
+check("or by the name in its version block",
+      skse.is_bees("x.dll", skse.DllInfo(
+          plugin_name="Backported Extended ESL Support")), True)
+
+# The sort's report.
+with _tempfile.TemporaryDirectory() as _mods:
+    _write(os.path.join(_mods, "New Quest", "newquest.esp"), _hedr(1.71))
+    _q171 = node("New Quest", 0, files=["newquest.esp"], plugins=["newquest.esp"])
+    check("the sort reports 1.71 plugins on an older game version",
+          [p.kind for p in loadcheck.find([_q171], _mods, {"newquest.esp"},
+                                          set(), _SE, {"newquest.esp"})],
+          ["header_171"])
+    _bees_mod = node("BEES", 1, files=["skse/plugins/backportedeslsupport.dll"])
+    _bees_mod.skse_dlls = {"skse/plugins/backportedeslsupport.dll":
+                           skse.DllInfo(query=True)}
+    check("not once BEES is installed",
+          loadcheck.find([_q171, _bees_mod], _mods, {"newquest.esp"}, set(),
+                         _SE, {"newquest.esp"}), [])
+    _bees_mod.skse_dlls = {"skse/plugins/backportedeslsupport.dll":
+                           skse.DllInfo(version_data=True)}
+    check("a BEES built for another game version does not count",
+          sorted(p.kind for p in loadcheck.find(
+              [_q171, _bees_mod], _mods, {"newquest.esp"}, set(), _SE,
+              {"newquest.esp"})), ["header_171", "skse_runtime"])
+    check("not when the plugin is unticked",
+          loadcheck.find([_q171], _mods, {"newquest.esp"}, set(), _SE, set()),
+          [])
+    check("and not when the plugin list cannot be read",
+          loadcheck.find([_q171], _mods, {"newquest.esp"}, set(), _SE, None),
+          [])
+
+# Before launch.
+with _tempfile.TemporaryDirectory() as _root:
+    _game = os.path.join(_root, "game")
+    _write(os.path.join(_game, "SkyrimSE.exe"), _pe(file_version=(1, 5, 97, 0)))
+    _write(os.path.join(_game, "skse64_loader.exe"), b"MZ")
+    _write(os.path.join(_game, "skse64_1_5_97.dll"),
+           _pe(file_version=(0, 2, 0, 20)))
+    _write(os.path.join(_root, "mods", "New Quest", "NewQuest.esp"),
+           _hedr(1.71))
+    _ml = [("New Quest", os.path.join(_root, "mods", "New Quest"))]
+    check("the launch check reports it too, for ticked plugins",
+          [p.kind for p in _launch.check(_ml, _game, None, {"newquest.esp"})],
+          ["header_171"])
+    check("but only when told which plugins are ticked",
+          _launch.check(_ml, _game, None, None), [])
+    _write(os.path.join(_root, "mods", "BEES", "SKSE", "Plugins",
+                        "BackportedESLSupport.dll"),
+           _pe(["SKSEPlugin_Load", "SKSEPlugin_Query"]))
+    check("and stops once BEES is among the mods",
+          _launch.check(_ml + [("BEES", os.path.join(_root, "mods", "BEES"))],
+                        _game, None, {"newquest.esp"}), [])
+
+with _tempfile.TemporaryDirectory() as _root:
+    _old_cache = os.path.join(_root, "cache.json")
+    with io.open(_old_cache, "w", encoding="utf-8") as _fh:
+        _fh.write('{"version": 1, "dlls": {"c:/x.dll": [[1, 2], {"query": true}]}}')
+    skse.load_cache(_old_cache)
+    check("a cache saved before plugin names were read is not trusted",
+          "c:/x.dll" in skse._cache, False)
+
 
 if failures:
     print("FAILED")

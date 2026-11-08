@@ -217,6 +217,7 @@ Before SKSE or the game is launched from MO2, and right after a mod is installed
 - **Each SKSE plugin against your game version** — read from its export table and version block.
 - **Each SKSE plugin against your SKSE version** — the oldest SKSE it accepts, which SKSE enforces ("requires newer script extender").
 - **Address Library** for the version you run, for the plugins built on it.
+- **Plugin header version.** Plugins saved by the Creation Kit for 1.6.1130 and later carry header version 1.71; earlier game versions read them only with *Backported Extended ESL Support*. On those versions, ticked 1.71 plugins are reported unless BEES is installed and loads. The same check is in the sort's "will not load" report.
 
 Only the copy of each plugin that wins in the mod order is judged, since it is the only one SKSE sees. The warning offers **Launch anyway** or **Cancel launch**, and can be told not to repeat itself about the same problems. Nothing is ever disabled or changed. MO2's own Script Extender Plugin Checker reads SKSE's log, so it reports after the game has run; this one reads the files, so it reports before. Results are cached by file size and date, so a launch costs a fraction of a second. Turn it off with the `check_skse_plugins` setting.
 

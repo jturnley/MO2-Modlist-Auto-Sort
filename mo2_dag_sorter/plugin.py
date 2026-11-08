@@ -21,7 +21,7 @@ from . import (backups, category_ui, context_menu, dag,
                key_ui, launchcheck, loadcheck, nexus_api, resolve_ui,
                restore_ui, skse, slots as slots_mod, stacks, vault_key)
 
-VERSION = mobase.VersionInfo(0, 10, 7, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 10, 8, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 BREAK = chr(10)
 
@@ -765,6 +765,15 @@ class DagSorterTool(mobase.IPluginTool):
                 continue
         return mods
 
+    def _active_plugins(self):
+        """The ticked plugins, lowercased, or None if MO2 will not say."""
+        try:
+            plugin_list = self._organizer.pluginList()
+            return {name.lower() for name in plugin_list.pluginNames()
+                    if plugin_list.state(name) == mobase.PluginState.ACTIVE}
+        except (AttributeError, RuntimeError, TypeError):
+            return None
+
     def _skse_ignored(self) -> set:
         raw = self._organizer.pluginSetting(self.name(), "skse_check_ignored")
         try:
@@ -794,7 +803,8 @@ class DagSorterTool(mobase.IPluginTool):
                 return True
             problems = launchcheck.check(self._enabled_mod_folders(),
                                          self._skse_game_dir(),
-                                         self._organizer.overwritePath())
+                                         self._organizer.overwritePath(),
+                                         self._active_plugins())
             skse.save_cache(self._skse_cache())
             ignored = self._skse_ignored()
             problems = [p for p in problems
