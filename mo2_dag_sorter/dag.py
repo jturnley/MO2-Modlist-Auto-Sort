@@ -131,9 +131,29 @@ def _scope(a, b, shared: int):
     return big, small
 
 
-def conflict_edges(nodes, skip=frozenset()) -> list[DependencyEdge]:
+def _vr_first(a, b):
+    """(the flat-screen mod, which loads first; the VR one, after), or None.
+
+    On Skyrim VR, a mod made for VR that writes the same files as one made
+    for the flat-screen game is there to replace them - that is what a VR
+    port or a VR fix is. Nothing else in the pair says so as plainly as the
+    name: a VR fix filed as a texture mod would otherwise lose to a
+    flat-screen patch on tier alone. Generated output is left alone, since
+    its job is to sit on top of everything it was built from.
+    """
+    if tiers.TIER_OUTPUT in (a.tier, b.tier):
+        return None
+    va, vb = tiers.is_vr_mod(a.name), tiers.is_vr_mod(b.name)
+    if va == vb:
+        return None
+    return (b, a) if va else (a, b)
+
+
+def conflict_edges(nodes, skip=frozenset(), vr=False) -> list[DependencyEdge]:
     """One edge per conflicting pair, by tier, surface rank, family, shape,
-    scope and finally the order the list already had.
+    scope and finally the order the list already had. On Skyrim VR
+    (``vr``), a VR mod against a flat-screen one is settled before any of
+    those, in the VR mod's favour.
 
     ``skip`` holds sorted name pairs already settled by something better
     than a file overlap - two builds of one SKSE plugin - which get no
@@ -166,7 +186,12 @@ def conflict_edges(nodes, skip=frozenset()) -> list[DependencyEdge]:
         if pair in skip:
             continue
         a, b = seen[pair]
-        if a.tier != b.tier:
+        detail = "{} shared file(s)".format(count)
+        ported = _vr_first(a, b) if vr else None
+        if ported is not None:
+            lo, hi = ported
+            detail += "; on Skyrim VR the VR version wins"
+        elif a.tier != b.tier:
             lo, hi = (a, b) if a.tier < b.tier else (b, a)
         elif a.subtier != b.subtier:
             # Two texture mods fighting over the same surfaces: what they
@@ -189,7 +214,7 @@ def conflict_edges(nodes, skip=frozenset()) -> list[DependencyEdge]:
                 lo, hi = ((a, b) if a.original_index < b.original_index
                           else (b, a))
         out.append(DependencyEdge(lo.name, hi.name, "file_conflict",
-                                  "{} shared file(s)".format(count)))
+                                  detail))
     return out
 
 
@@ -355,9 +380,11 @@ def skse_edges(nodes, runtime=()) -> list[DependencyEdge]:
 
 
 def build_edges(nodes, needs=None, runtime=()) -> list[DependencyEdge]:
+    from . import skse
     dll = skse_edges(nodes, runtime)
     settled = frozenset(tuple(sorted((e.parent, e.child))) for e in dll)
-    return (conflict_edges(nodes, settled) + dll + master_edges(nodes)
+    return (conflict_edges(nodes, settled, vr=skse.is_vr(runtime))
+            + dll + master_edges(nodes)
             + asset_path_edges(nodes) + name_extension_edges(nodes)
             + requirement_edges(nodes, needs or {})
             + shader_edges(nodes))

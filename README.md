@@ -60,7 +60,7 @@ Neither SKSE edge is built on Skyrim VR. SKSE VR loads plugins through the same 
 Freezing a stack yields to soft edges and refuses on hard ones, so a freeze
 can override a file conflict but cannot break a master dependency.
 
-A `file_conflict` edge still needs a direction. In order: tier, then surface
+A `file_conflict` edge still needs a direction. On **Skyrim VR**, a mod whose name marks it as VR (the word `VR`, or `SkyrimVR`, `SKSEVR`, `VRIK`) wins over a flat-screen mod it shares files with, before anything below is considered; generated output still stays on top. Otherwise, in order: tier, then surface
 rank (PBR over parallax over plain), then **family** — `Ruins Clutter Improved
 PBR` wins over `Ruins Clutter Improved` — then **shape**: a handful of files
 landing inside a big mod is a patch to it, and a mod whose files mostly land

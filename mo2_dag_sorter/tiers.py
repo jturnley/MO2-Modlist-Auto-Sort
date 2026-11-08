@@ -312,6 +312,17 @@ SHADER_FRAMEWORKS = ("community shaders",)
 SHADER_USERS = ("pbr", "parallax")
 
 
+# Whole words that mark a mod as made for Skyrim VR. Whole words only:
+# "Vrolik" is not a VR mod. The longer ones are how VR frameworks and their
+# ports name themselves when they do not say "VR" on its own.
+VR_WORDS = frozenset(("vr", "skyrimvr", "sksevr", "vrik"))
+
+
+def is_vr_mod(name: str) -> bool:
+    """Does the name say this mod was made for Skyrim VR?"""
+    return bool(words_in(name) & VR_WORDS)
+
+
 # Words too common to say two mod names belong to one family.
 FAMILY_NOISE = frozenset(("and", "the", "of", "a", "for", "se", "sse",
                           "ae", "le", "by", "with", "in"))

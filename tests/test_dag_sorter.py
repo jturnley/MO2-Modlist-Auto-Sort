@@ -1804,6 +1804,41 @@ check("off VR, the newer build still wins as before",
       [(e.parent, e.child) for e in dag.skse_edges([_flat, _vr], _AE)],
       [("PapyrusUtil VR", "PapyrusUtil SE")])
 
+# --- 0.10.4: on Skyrim VR, the VR version of a file wins -------------------
+check("a VR mod is known by a whole word in its name",
+      [tiers.is_vr_mod(n) for n in ("SkyUI VR", "Engine Fixes - VR", "VRIK",
+                                    "SKSEVR Address Library", "Vrolik Armor",
+                                    "Vivid Rocks", "Skyrim VR")],
+      [True, True, True, True, False, False, True])
+_flat_patch = node("Better Lanterns Patch", 0, tier=5,
+                   files=["textures/lantern.dds"])
+_vr_fix = node("Better Lanterns VR", 1, tier=3, files=["textures/lantern.dds"])
+_got = dag.conflict_edges([_vr_fix, _flat_patch], vr=True)
+check("on VR, the VR mod wins even over a flat-screen mod of a higher tier",
+      [(e.parent, e.child) for e in _got],
+      [("Better Lanterns Patch", "Better Lanterns VR")])
+check("and the edge still leads with its file count, and says why",
+      (_got[0].detail.split(" ", 1)[0], "VR version wins" in _got[0].detail),
+      ("1", True))
+check("off VR, the same pair is placed by tier as before",
+      [(e.parent, e.child) for e in dag.conflict_edges([_vr_fix, _flat_patch])],
+      [("Better Lanterns VR", "Better Lanterns Patch")])
+check("build_edges switches the rule on from the game version",
+      [(e.parent, e.child) for e in dag.build_edges(
+          [_vr_fix, _flat_patch], None, (1, 4, 15, 0))
+       if e.reason == "file_conflict"],
+      [("Better Lanterns Patch", "Better Lanterns VR")])
+_vr_a = node("Thing VR", 0, tier=3, files=["x.nif"])
+_vr_b = node("Other VR", 1, tier=5, files=["x.nif"])
+check("two VR mods are placed by the usual rules",
+      [(e.parent, e.child) for e in dag.conflict_edges([_vr_a, _vr_b], vr=True)],
+      [("Thing VR", "Other VR")])
+_out = node("DynDOLOD Output", 1, tier=tiers.TIER_OUTPUT, files=["x.nif"])
+_vr_c = node("Trees VR", 0, tier=3, files=["x.nif"])
+check("generated output still sits on top of a VR mod",
+      [(e.parent, e.child) for e in dag.conflict_edges([_vr_c, _out], vr=True)],
+      [("Trees VR", "DynDOLOD Output")])
+
 
 if failures:
     print("FAILED")
