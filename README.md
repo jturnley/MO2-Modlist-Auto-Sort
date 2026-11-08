@@ -53,6 +53,7 @@ Ordered by authority, strongest first:
 
 Neither SKSE edge is built on Skyrim VR. SKSE VR loads plugins through the same entry point as SKSE on 1.5.97, so a flat-screen build and a VR build of one plugin look identical from the file, and those pairs are ordered by the other rules instead.
 
+| `light_plugin` | two mods ship the same plugin and only one copy is ESL-flagged: that copy wins, so it keeps taking no full slot |
 | `nexus_requirement` | the mod page's Requirements list |
 | `name_extension` | `X - Patch for Y` is a placement statement |
 | `file_conflict` | overlapping files, weakest and the first to yield |
@@ -75,6 +76,7 @@ the order you already had is kept.
 - **Mods with no category** — where the placement is a guess, and why.
 - **Identical mods** — separate mods shipping byte-identical file lists.
 - **Shadowed mods** — entirely overridden by something above them.
+- **Full plugin slots, before and after.** The left pane decides which copy of a plugin the game reads, and an ESL-flagged copy takes no full slot. If the new order changes the count, the confirm dialog shows it, lists the plugins whose winning copy is no longer ESL-flagged, and warns when the result goes past the game's 254.
 - **Things that will not load at all**, whatever the order: a plugin whose
   master is missing (and why — disabled mod, unticked, or not installed), an
   archive no active plugin opens, an SKSE DLL built for another game version.
@@ -94,6 +96,7 @@ mo2_dag_sorter/       the plugin - copy this folder into MO2/plugins/
   archives.py         .bsa name tables, for tiering only
   skse.py             what an SKSE DLL says about itself
   loadcheck.py        what will not load - reported, never acted on
+  slots.py            which copy of a plugin wins, and full-slot counts
   modlist.py          reading and writing modlist.txt
   nexus.py            v1 metadata + cache    requirements.py  v2 GraphQL
   decisions.py        user_rules.json        backups.py       undo

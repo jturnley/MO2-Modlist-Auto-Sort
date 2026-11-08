@@ -104,6 +104,16 @@ def main() -> int:
             len(result.shadowed)))
         for item in result.shadowed[:20]:
             print("  " + item.headline)
+    change = result.slots
+    if change is not None and change.changed:
+        print("")
+        print(change.headline + (" - OVER THE LIMIT" if change.over else ""))
+        for plugin, now, was in change.became_full:
+            print("  now full: {} ({}'s copy, was {}'s)".format(
+                plugin, now, was))
+        for plugin, now, was in change.became_light:
+            print("  now light: {} ({}'s copy, was {}'s)".format(
+                plugin, now, was))
     if result.problems:
         print("")
         print("will not load, whatever the order - reported, not fixed "

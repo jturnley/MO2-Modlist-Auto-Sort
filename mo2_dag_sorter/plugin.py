@@ -17,10 +17,10 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from . import (backups, category_ui, context_menu, dag,
                decisions as decisions_mod,
                incremental, modlist, nexus, nexus_bridge, pipeline,
-               key_ui, nexus_api, resolve_ui, restore_ui, stacks,
-               vault_key)
+               key_ui, nexus_api, resolve_ui, restore_ui,
+               slots as slots_mod, stacks, vault_key)
 
-VERSION = mobase.VersionInfo(0, 10, 4, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 10, 5, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 BREAK = chr(10)
 
@@ -628,6 +628,14 @@ class DagSorterTool(mobase.IPluginTool):
             lines.append("FULLY OVERRIDDEN - these contribute nothing in the "
                          "new order:")
             lines += ["  " + item.headline for item in result.shadowed]
+        change = getattr(result, "slots", None)
+        if change is not None and change.became_full:
+            lines.append("")
+            lines.append("NOW FULL-SIZE - the winning copy of these plugins "
+                         "is no longer ESL-flagged ({} -> {} full slots):"
+                         .format(change.before, change.after))
+            lines += ["  {} - now {}'s copy, was {}'s".format(p, now, was)
+                      for p, now, was in change.became_full]
         if result.problems:
             lines.append("")
             lines.append("WILL NOT LOAD, whatever the order - reported, "
@@ -652,6 +660,15 @@ class DagSorterTool(mobase.IPluginTool):
                         "not load at all, whatever the order - see "
                         "Details. Nothing has been changed about them."
                         ).format(len(result.problems))
+        if change is not None and change.changed:
+            summary += ("\n\nFull plugin slots: {} -> {} (limit {})."
+                        ).format(change.before, change.after,
+                                 slots_mod.FULL_LIMIT)
+            if change.over:
+                box.setIcon(QMessageBox.Icon.Warning)
+                summary += (" The new order goes over the limit and the "
+                            "game will not start with it - see Details "
+                            "for the plugins that changed.")
         box.setInformativeText(summary)
         box.setDetailedText("\n".join(lines))
         box.setStandardButtons(QMessageBox.StandardButton.Apply

@@ -379,12 +379,48 @@ def skse_edges(nodes, runtime=()) -> list[DependencyEdge]:
     return out
 
 
+def light_edges(nodes) -> list[DependencyEdge]:
+    """Two mods shipping one plugin, one copy ESL-flagged: it wins.
+
+    The flagged copy exists to replace the other - someone flagged it in
+    xEdit to get under the 254 full-plugin limit and kept it in a mod of
+    its own. Letting the full copy win puts that plugin back in a full
+    slot, and enough of them pushed a real list from 250 to 263 with the
+    plugin list itself untouched. See slots.py.
+    """
+    holders: dict[str, list] = defaultdict(list)
+    for node in nodes:
+        if node.is_tool:
+            continue
+        for plugin in node.plugins:
+            holders[plugin].append(node)
+    out: list[DependencyEdge] = []
+    seen: set = set()
+    for plugin in sorted(holders):
+        group = holders[plugin]
+        light = [n for n in group
+                 if plugin in (getattr(n, "light_plugins", None) or ())]
+        full = [n for n in group if n not in light]
+        for heavy in full:
+            for flagged in light:
+                if (heavy.name, flagged.name) in seen:
+                    continue
+                seen.add((heavy.name, flagged.name))
+                out.append(DependencyEdge(
+                    heavy.name, flagged.name, "light_plugin",
+                    "{}: {}'s copy is ESL-flagged and {}'s is not".format(
+                        plugin, flagged.name, heavy.name)))
+    return out
+
+
 def build_edges(nodes, needs=None, runtime=()) -> list[DependencyEdge]:
     from . import skse
     dll = skse_edges(nodes, runtime)
-    settled = frozenset(tuple(sorted((e.parent, e.child))) for e in dll)
+    light = light_edges(nodes)
+    settled = frozenset(tuple(sorted((e.parent, e.child)))
+                        for e in dll + light)
     return (conflict_edges(nodes, settled, vr=skse.is_vr(runtime))
-            + dll + master_edges(nodes)
+            + dll + light + master_edges(nodes)
             + asset_path_edges(nodes) + name_extension_edges(nodes)
             + requirement_edges(nodes, needs or {})
             + shader_edges(nodes))
@@ -649,6 +685,17 @@ def acyclic_edges(nodes, edges, decisions=None) -> tuple[
         elif verdict == "cycle":
             dropped.append(edge)
 
+    # An ESL-flagged copy of a plugin over the full one it was made from:
+    # read from the header, and the whole reason the copy exists, so it
+    # comes before anything inferred - but a freeze can still move it.
+    for edge in sorted((e for e in edges if e.reason == "light_plugin"),
+                       key=lambda e: (e.parent, e.child)):
+        verdict = admit(edge)
+        if verdict == "kept":
+            kept.append(edge)
+        elif verdict == "cycle":
+            dropped.append(edge)
+
     # Two builds of one DLL that both load: the newer is the better guess.
     # It goes ahead of a requirement list, because "Detection Meter - AE
     # Support" requires Detection Meter and ships nothing but an older copy
@@ -689,7 +736,7 @@ def acyclic_edges(nodes, edges, decisions=None) -> tuple[
         return int(head) if head.isdigit() else 0
 
     ranked = factual | {"name_extension", "nexus_requirement",
-                        "skse_version"}
+                        "skse_version", "light_plugin"}
     conflicts = sorted((e for e in edges if e.reason not in ranked),
                        key=lambda e: (-weight(e), e.parent, e.child))
     for edge in conflicts:
@@ -810,6 +857,8 @@ EDGE_WORDS = {
     "skse_version": "{child}'s copy of a shared SKSE plugin is a newer "
                     "build than {parent}'s",
     "shader_framework": "{child} uses shaders that {parent} provides",
+    "light_plugin": "{child} ships an ESL-flagged copy of a plugin that "
+                    "{parent} ships full-size",
 }
 
 

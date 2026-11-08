@@ -44,6 +44,7 @@ class ModNode:
     # for why they must never reach the conflict graph.
     archive_manifest: list[str] = field(default_factory=list)
     skse_dlls: dict = field(default_factory=dict)   # path -> skse.DllInfo
+    light_plugins: set = field(default_factory=set)  # root plugins, ESL-flagged
 
     @property
     def enabled(self) -> bool:

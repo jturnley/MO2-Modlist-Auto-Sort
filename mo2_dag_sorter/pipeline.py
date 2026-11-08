@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 
 from . import (archives, dag, decisions as decisions_mod, duplicates,
                loadcheck, masters, modlist, nexus, nexus_api,
-               requirements, scan, shadow, skse, tiers, uncategorised)
+               requirements, scan, shadow, skse, slots, tiers,
+               uncategorised)
 
 
 @dataclass
@@ -35,6 +36,10 @@ class SortResult:
     # What will not load at all, whatever the order: loadcheck.Problem.
     # Reported, never fixed.
     problems: list = field(default_factory=list)
+    # slots.SlotChange: full plugin slots before and after, and which
+    # plugins' winning copy went from light to full. None if plugins.txt
+    # could not be read.
+    slots: object = None
 
     @property
     def changed(self) -> bool:
@@ -125,6 +130,7 @@ def sort_profile(mo2_root: str, profile: str = "Default",
                                       os.path.join(mo2_root, "overwrite"))
     archives.populate(nodes, mods_dir, loaded, listed)
     skse.populate(nodes, mods_dir)
+    slots.populate(nodes, mods_dir)
 
     cache = nexus.NexusCache(os.path.join(cache_dir, "nexus_cache.json"))
     ids = [n.nexus_id for n in nodes if n.nexus_id]
@@ -211,6 +217,13 @@ def sort_profile(mo2_root: str, profile: str = "Default",
                               active)
     if problems:
         report += "; {} thing(s) will not load".format(len(problems))
+    # The left pane picks which copy of a plugin the game reads, and that
+    # copy decides whether it takes a full slot. Counted before and after
+    # so a sort can never push a list over the limit unannounced.
+    slot_change = slots.compare(nodes, final, mods_dir, profile_dir, data_dir,
+                                os.path.join(mo2_root, "overwrite"))
+    if slot_change is not None and slot_change.changed:
+        report += "; " + slot_change.headline
     # A pair the user has already ruled on is settled, not outstanding.
     unresolved = [e for e in dropped
                   if not decisions.known(e.parent, e.child)]
@@ -220,7 +233,7 @@ def sort_profile(mo2_root: str, profile: str = "Default",
                       uncategorised.find(final, tiers.TIER_OUTPUT), unresolved,
                       dag.unhonoured_freezes(ordered, decisions.freezes,
                                              decisions.freezes_below),
-                      report, problems)
+                      report, problems, slot_change)
 
 
 def _reassemble_disabled(sortable_nodes, ordered, disabled):
