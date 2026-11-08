@@ -56,6 +56,8 @@ class DllInfo:
         """True, False, or None when there is no telling."""
         if not runtime or not (self.query or self.version_data):
             return None
+        if is_vr(runtime):
+            return None                 # see is_vr
         if tuple(runtime[:2]) < (1, 6):
             return self.query
         if not self.version_data:
@@ -74,6 +76,21 @@ class DllInfo:
         """Something to compare two builds of one plugin by."""
         return self.file_version or ((self.plugin_version,)
                                      if self.plugin_version else ())
+
+
+def is_vr(runtime) -> bool:
+    """Is this Skyrim VR? Its executable is 1.4.15; no flat release was 1.4.
+
+    On VR the export table says nothing useful. SKSE VR asks for
+    SKSEPlugin_Query like SKSE on 1.5.97 does, so a flat-screen SE build and
+    a VR build of the same plugin export the same thing, and both looked
+    loadable. The newer build then won - and flat builds are usually
+    numbered ahead of their VR ports, so the flat mod sorted over the VR
+    one it was meant to lose to. Nothing in the file tells the two apart,
+    so on VR the DLLs are not read for ordering at all, and those pairs are
+    placed by the rules that placed them before DLLs were read.
+    """
+    return bool(runtime) and tuple(runtime[:2]) == (1, 4)
 
 
 def pack_runtime(version) -> int:
@@ -228,6 +245,8 @@ def verdict(a, b, runtime):
     newer winning: a later build of the same plugin carries the fixes the
     earlier one lacks, and nothing is gained by shipping the older.
     """
+    if is_vr(runtime):
+        return None                     # see is_vr
     shared = sorted(set(a.skse_dlls) & set(b.skse_dlls))
     for rel in shared:
         la = a.skse_dlls[rel].loads_on(runtime)

@@ -1777,6 +1777,33 @@ check("the sorter loads on a Python with no SSL, and falls back offline",
 check("and its report says the SSL module is what is missing",
       len(_lines) > 2 and "could not load its SSL module" in _lines[2], True)
 
+# --- 0.10.3: Skyrim VR - the DLLs cannot tell a VR build from a flat one ---
+_VR = (1, 4, 15, 0)
+check("Skyrim VR is recognised by its executable's version",
+      (skse.is_vr(_VR), skse.is_vr(_AE), skse.is_vr(_SE), skse.is_vr(())),
+      (True, False, False, False))
+check("on VR, a DLL's exports say nothing about whether it loads",
+      (skse.DllInfo(query=True).loads_on(_VR),
+       skse.DllInfo(version_data=True,
+                    independence=skse.ADDRESS_LIBRARY).loads_on(_VR)),
+      (None, None))
+_flat = _dll_node("PapyrusUtil SE", 0, skse.DllInfo(query=True,
+                                                    file_version=(4, 6, 0, 0)))
+_vr = _dll_node("PapyrusUtil VR", 1, skse.DllInfo(query=True,
+                                                  file_version=(3, 6, 0, 0)))
+check("on VR, a newer flat-screen build no longer outranks the VR port",
+      dag.skse_edges([_flat, _vr], _VR), [])
+check("and the pair is left to the file-overlap rules, which keep the "
+      "order the user had",
+      [(e.parent, e.child, e.reason)
+       for e in dag.build_edges([_flat, _vr], None, _VR)],
+      [("PapyrusUtil SE", "PapyrusUtil VR", "file_conflict")])
+check("on VR, no DLL is reported as built for the wrong game version",
+      loadcheck._runtime_problems([_lone], _VR), [])
+check("off VR, the newer build still wins as before",
+      [(e.parent, e.child) for e in dag.skse_edges([_flat, _vr], _AE)],
+      [("PapyrusUtil VR", "PapyrusUtil SE")])
+
 
 if failures:
     print("FAILED")

@@ -50,6 +50,9 @@ Ordered by authority, strongest first:
 | `shader_framework` | Community Shaders before anything using shaders |
 | `skse_runtime` | two mods ship the same SKSE DLL and only one copy loads on your game version. A fact, read from the DLL's exports |
 | `skse_version` | two mods ship the same SKSE DLL and both load: the newer build wins |
+
+Neither SKSE edge is built on Skyrim VR. SKSE VR loads plugins through the same entry point as SKSE on 1.5.97, so a flat-screen build and a VR build of one plugin look identical from the file, and those pairs are ordered by the other rules instead.
+
 | `nexus_requirement` | the mod page's Requirements list |
 | `name_extension` | `X - Patch for Y` is a placement statement |
 | `file_conflict` | overlapping files, weakest and the first to yield |
