@@ -65,8 +65,14 @@ def populate(nodes, mods_dir: str) -> None:
             continue
         node.plugins = names
         seen: list[str] = []
+        # Kept per plugin as well as pooled: two mods can ship the same
+        # plugin built on different masters, and which copy can load at
+        # all is decided by its own list, not the mod's.
+        node.plugin_masters = {}
         for name in names:
-            for master in read_masters(os.path.join(mods_dir, node.name, name)):
+            own_masters = read_masters(os.path.join(mods_dir, node.name, name))
+            node.plugin_masters[name] = own_masters
+            for master in own_masters:
                 if master not in seen:
                     seen.append(master)
         own = set(names)

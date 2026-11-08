@@ -104,6 +104,14 @@ def main() -> int:
             len(result.shadowed)))
         for item in result.shadowed[:20]:
             print("  " + item.headline)
+    handed = result.winners
+    if handed:
+        print("")
+        print(handed.headline + ":")
+        for kind, path, now, was in handed.changes[:args.top]:
+            print("  [{}] {} - now {}, was {}".format(kind, path, now, was))
+        if len(handed.changes) > args.top:
+            print("  ... and {} more".format(len(handed.changes) - args.top))
     change = result.slots
     if change is not None and change.changed:
         print("")

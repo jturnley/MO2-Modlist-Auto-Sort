@@ -104,7 +104,8 @@ class Slots:
     winners: dict          # plugin -> (where the winning copy is, light?)
 
 
-def count(order, mods_dir, active, listed, data_dir, overwrite_dir) -> Slots:
+def count(order, mods_dir, active, listed, data_dir, overwrite_dir,
+          light_works: bool = True) -> Slots:
     """Full slots taken in this left-pane order.
 
     Winners are worked out the way MO2 builds the game's Data folder: the
@@ -128,6 +129,12 @@ def count(order, mods_dir, active, listed, data_dir, overwrite_dir) -> Slots:
     for name in _plugins_in(overwrite_dir):
         winners[name.lower()] = ("overwrite",
                                  is_light(os.path.join(overwrite_dir, name)))
+    if not light_works:
+        # Skyrim VR without its ESL support plugin: an .esl does not load
+        # at all, and an ESL flag on an .esp is ignored, so it is full.
+        winners = {p: (where, False if light else light)
+                   for p, (where, light) in winners.items()
+                   if not p.endswith(".esl")}
     loaded = (set(active) | implicit) & set(winners)
     full = sum(1 for p in loaded if winners[p][1] is False)
     return Slots(full, {p: winners[p] for p in loaded})
@@ -156,16 +163,16 @@ class SlotChange:
 
 
 def compare(before_order, after_order, mods_dir, profile_dir, data_dir,
-            overwrite_dir) -> SlotChange | None:
+            overwrite_dir, light_works: bool = True) -> SlotChange | None:
     """What the new order does to the full-slot count, or None if the
     plugin list cannot be read."""
     active, listed = plugin_lists(profile_dir)
     if active is None:
         return None
     was = count(before_order, mods_dir, active, listed, data_dir,
-                overwrite_dir)
+                overwrite_dir, light_works)
     now = count(after_order, mods_dir, active, listed, data_dir,
-                overwrite_dir)
+                overwrite_dir, light_works)
     change = SlotChange(was.full, now.full)
     for plugin in sorted(now.winners):
         old_where, old_light = was.winners.get(plugin, (None, None))

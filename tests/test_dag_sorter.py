@@ -1946,13 +1946,187 @@ _pipe_src = io.open(os.path.join(os.path.dirname(os.path.abspath(
     _pipeline.__file__)), "pipeline.py"), encoding="utf-8").read()
 check("the sort records light plugins and compares the slot counts",
       ("slots.populate(nodes, mods_dir)" in _pipe_src
-       and "slots.compare(nodes, final" in _pipe_src), True)
+       and "nodes, final, mods_dir, profile_dir, data_dir, overwrite_dir," in _pipe_src), True)
 _plugin_src3 = io.open(os.path.join(os.path.dirname(os.path.abspath(
     _pipeline.__file__)), "plugin.py"), encoding="utf-8").read()
 check("the confirm dialog shows the slot count and warns past the limit",
       ("Full plugin slots: {} -> {}" in _plugin_src3
        and "QMessageBox.Icon.Warning" in _plugin_src3
        and "NOW FULL-SIZE" in _plugin_src3), True)
+
+# --- 0.10.6: the copy that can load wins; Address Library; VR ESL; winners --
+from mo2_dag_sorter import winners as _winners
+
+# Beeing Female NG ships its own FMR- Immersive Effects.esp, built on
+# Beeing Female; the FMR mod's copy needs Fertility Mode.esm.
+_bf = node("Beeing Female NG", 1, tier=3,
+           files=["beeingfemale.esm", "fmr- immersive effects.esp",
+                  "scripts/_fme_sc_mcm.pex"],
+           plugins=["beeingfemale.esm", "fmr- immersive effects.esp"])
+_bf.plugin_masters = {"beeingfemale.esm": ["skyrim.esm"],
+                      "fmr- immersive effects.esp": ["skyrim.esm"]}
+_fmr = node("FMR Immersive Effects", 0, tier=5,
+            files=["fmr- immersive effects.esp", "scripts/_fme_sc_mcm.pex"],
+            plugins=["fmr- immersive effects.esp"])
+_fmr.plugin_masters = {"fmr- immersive effects.esp":
+                       ["skyrim.esm", "fertility mode.esm"]}
+_loaded = {"skyrim.esm", "beeingfemale.esm", "fmr- immersive effects.esp"}
+_usable = dag.loadable_edges([_bf, _fmr], _loaded)
+check("the copy whose masters are all installed wins over one that cannot "
+      "load", [(e.parent, e.child, e.reason) for e in _usable],
+      [("FMR Immersive Effects", "Beeing Female NG", "loadable_plugin")])
+check("and the reason names what the losing copy is missing",
+      "fertility mode.esm" in _usable[0].detail, True)
+_all = dag.build_edges([_bf, _fmr], None, (), _loaded)
+check("that settles the whole pair - scripts too - with no file_conflict "
+      "edge pulling the other way",
+      sorted(e.reason for e in _all
+             if {e.parent, e.child} == {"Beeing Female NG",
+                                        "FMR Immersive Effects"}),
+      ["loadable_plugin"])
+_req = DependencyEdge("Beeing Female NG", "FMR Immersive Effects",
+                      "nexus_requirement", "This or Fertility Mode Reloaded")
+_kept, _dropped = dag.acyclic_edges([_bf, _fmr], _all + [_req])
+check("a requirement list pointing the other way yields to it",
+      ([(e.parent, e.child) for e in _kept],
+       [(e.reason) for e in _dropped]),
+      ([("FMR Immersive Effects", "Beeing Female NG")],
+       ["nexus_requirement"]))
+check("and a freeze cannot break it", "loadable_plugin" in dag.HARD_REASONS,
+      True)
+check("with no plugin list to judge by, nothing is decided",
+      dag.loadable_edges([_bf, _fmr], None), [])
+_fmr_ok = node("FMR Fixed", 0, files=["fmr- immersive effects.esp"],
+               plugins=["fmr- immersive effects.esp"])
+_fmr_ok.plugin_masters = {"fmr- immersive effects.esp": ["skyrim.esm"]}
+check("two loadable copies are left to the other rules",
+      dag.loadable_edges([_bf, _fmr_ok], _loaded), [])
+
+# The missing-master report reads the copy that wins, and only that one.
+for _n in (_bf, _fmr):
+    _n.prefix = "+"
+_problems = loadcheck.find([_fmr, _bf], "", _loaded, set())
+check("no missing master is reported for a copy that is overridden",
+      [p.kind for p in _problems], [])
+_problems = loadcheck.find([_bf, _fmr], "", _loaded, set())
+check("but it is when that copy is the one that wins",
+      [(p.mod, p.kind) for p in _problems],
+      [("FMR Immersive Effects", "missing_master")])
+
+# Address Library: read from the DLL, checked against the game version.
+check("the Address Library file is named for the game version",
+      [skse.address_library_file(r) for r in (_AE, _SE, _VR, ())],
+      ["skse/plugins/versionlib-1-6-1170-0.bin",
+       "skse/plugins/version-1-5-97-0.bin",
+       "skse/plugins/version-1-4-15-0.csv", None])
+with _tempfile.TemporaryDirectory() as _folder:
+    _dll = os.path.join(_folder, "x.dll")
+    with open(_dll, "wb") as _fh:
+        _fh.write(_pe(["SKSEPlugin_Load", "SKSEPlugin_Query"])
+                  + b"Data/SKSE/Plugins/version-{}.bin" + bytes(1))
+    check("an SE-era plugin that names the file needs Address Library",
+          skse.read_dll(_dll).address_library, True)
+    with open(_dll, "wb") as _fh:
+        _fh.write(_pe(["SKSEPlugin_Load", "SKSEPlugin_Query"]))
+    check("one that does not, does not", skse.read_dll(_dll).address_library,
+          False)
+check("an AE plugin's version block saying so is enough",
+      skse.DllInfo(version_data=True,
+                   independence=skse.ADDRESS_LIBRARY).address_library, True)
+_needs_al = _dll_node("Meter", 0, skse.DllInfo(
+    version_data=True, independence=skse.ADDRESS_LIBRARY))
+_found = loadcheck.find([_needs_al], "", set(), set(), _AE)
+check("a plugin that needs Address Library with none installed is reported, "
+      "once for the file", [(p.item, p.kind) for p in _found],
+      [("versionlib-1-6-1170-0.bin", "address_library")])
+_al = node("Address Library for SKSE Plugins", 1,
+           files=["skse/plugins/versionlib-1-6-1170-0.bin"])
+check("and not once the right version is installed",
+      loadcheck.find([_needs_al, _al], "", set(), set(), _AE), [])
+_al_old = node("Address Library (old)", 1,
+               files=["skse/plugins/versionlib-1-6-640-0.bin"])
+check("another version's file does not count",
+      [p.kind for p in loadcheck.find([_needs_al, _al_old], "", set(), set(),
+                                      _AE)], ["address_library"])
+_sig = _dll_node("Signature Scanner", 0, skse.DllInfo(
+    version_data=True, independence=skse.SIGNATURES))
+check("a plugin that does not use it is never reported",
+      loadcheck.find([_sig], "", set(), set(), _AE), [])
+check("with the game version unknown, nothing is claimed",
+      loadcheck.find([_needs_al], "", set(), set(), ()), [])
+
+# Skyrim VR without its ESL support plugin.
+_esl_mod = node("Light Things", 0, files=["thing.esl", "flagged.esp"],
+                plugins=["thing.esl", "flagged.esp"])
+_esl_mod.light_plugins = {"thing.esl", "flagged.esp"}
+_vr_esl = node("Skyrim VR ESL Support", 1,
+               files=["skse/plugins/skyrimvresl.dll"])
+check("ESL works everywhere but VR, and on VR only with its SKSE plugin",
+      (loadcheck.light_works([_esl_mod], _AE),
+       loadcheck.light_works([_esl_mod], _VR),
+       loadcheck.light_works([_esl_mod, _vr_esl], _VR)), (True, False, True))
+check("on VR without it, .esl plugins are reported as not loading",
+      [(p.kind, "thing.esl" in p.detail)
+       for p in loadcheck.find([_esl_mod], "", set(), set(), _VR,
+                               {"thing.esl", "flagged.esp"})],
+      [("vr_esl", True)])
+check("and not once it is installed",
+      loadcheck.find([_esl_mod, _vr_esl], "", set(), set(), _VR,
+                     {"thing.esl", "flagged.esp"}), [])
+with _tempfile.TemporaryDirectory() as _root:
+    _prof = os.path.join(_root, "profile")
+    os.makedirs(_prof)
+    with io.open(os.path.join(_prof, "plugins.txt"), "w",
+                 encoding="utf-8") as _fh:
+        _fh.write("*thing.esl" + chr(10) + "*flagged.esp" + chr(10))
+    _active, _listed = _slots.plugin_lists(_prof)
+    _on = _slots.count([_esl_mod], "", _active, _listed, None, None)
+    _off = _slots.count([_esl_mod], "", _active, _listed, None, None,
+                        light_works=False)
+    check("on VR without ESL support, a flagged .esp takes a full slot and "
+          "an .esl is not loaded at all",
+          ((_on.full, sorted(_on.winners)), (_off.full, sorted(_off.winners))),
+          ((0, ["flagged.esp", "thing.esl"]), (1, ["flagged.esp"])))
+
+# Which mod provides each file that matters, before and after.
+check("plugins, archives, SKSE plugins and scripts are tracked; textures "
+      "are not",
+      [_winners.kind_of(p) for p in ("a.esp", "a.bsa",
+                                     "skse/plugins/x.dll", "scripts/x.pex",
+                                     "textures/x.dds", "meshes/a.esp")],
+      ["plugins", "archives", "SKSE plugins", "scripts", None, None])
+_one = node("One", 0, files=["shared.esp", "scripts/s.pex", "textures/t.dds",
+                             "only.esp"])
+_two = node("Two", 1, files=["shared.esp", "scripts/s.pex", "textures/t.dds"])
+_handed = _winners.diff([_one, _two], [_two, _one])
+check("a swap is reported for every contested file that matters, and only "
+      "those", [(k, p, now, was) for k, p, now, was in _handed.changes],
+      [("plugins", "shared.esp", "One", "Two"),
+       ("scripts", "scripts/s.pex", "One", "Two")])
+check("with a headline counting each kind",
+      _handed.headline, "1 plugins, 1 scripts change which mod provides them")
+check("an unchanged order changes nothing",
+      bool(_winners.diff([_one, _two], [_one, _two])), False)
+
+_pipe_src = io.open(os.path.join(os.path.dirname(os.path.abspath(
+    _pipeline.__file__)), "pipeline.py"), encoding="utf-8").read()
+check("the pipeline judges the new order and reports what changes hands",
+      ("loadcheck.find(final," in _pipe_src
+       and "winners.diff(nodes, final)" in _pipe_src
+       and "dag.build_edges(movable, needs, runtime, loaded)" in _pipe_src),
+      True)
+_plugin_src4 = io.open(os.path.join(os.path.dirname(os.path.abspath(
+    _pipeline.__file__)), "plugin.py"), encoding="utf-8").read()
+check("the confirm dialog lists what changes hands",
+      "CHANGES HANDS" in _plugin_src4, True)
+
+with _tempfile.TemporaryDirectory() as _mods:
+    os.makedirs(os.path.join(_mods, "Address Library", "SKSE", "Plugins"))
+    open(os.path.join(_mods, "Address Library", "SKSE", "Plugins",
+                      "versionlib-1-6-1170-0.bin"), "wb").close()
+    _al_disk = node("Address Library", 1, files=[])  # .bin is never scanned
+    check("Address Library is found on disk even though the scan skips .bin",
+          loadcheck.find([_needs_al, _al_disk], _mods, set(), set(), _AE), [])
 
 
 if failures:

@@ -53,6 +53,7 @@ Ordered by authority, strongest first:
 
 Neither SKSE edge is built on Skyrim VR. SKSE VR loads plugins through the same entry point as SKSE on 1.5.97, so a flat-screen build and a VR build of one plugin look identical from the file, and those pairs are ordered by the other rules instead.
 
+| `loadable_plugin` | two mods ship the same plugin and only one copy has all its masters installed: that copy wins (Beeing Female NG's rebuilt FMR and Fertility Adventures plugins over the originals). A fact |
 | `light_plugin` | two mods ship the same plugin and only one copy is ESL-flagged: that copy wins, so it keeps taking no full slot |
 | `nexus_requirement` | the mod page's Requirements list |
 | `name_extension` | `X - Patch for Y` is a placement statement |
@@ -76,6 +77,7 @@ the order you already had is kept.
 - **Mods with no category** — where the placement is a guess, and why.
 - **Identical mods** — separate mods shipping byte-identical file lists.
 - **Shadowed mods** — entirely overridden by something above them.
+- **What changes hands.** Every plugin, `.bsa` archive, SKSE plugin and script whose winning copy comes from a different mod in the new order, listed before you confirm.
 - **Full plugin slots, before and after.** The left pane decides which copy of a plugin the game reads, and an ESL-flagged copy takes no full slot. If the new order changes the count, the confirm dialog shows it, lists the plugins whose winning copy is no longer ESL-flagged, and warns when the result goes past the game's 254.
 - **Things that will not load at all**, whatever the order: a plugin whose
   master is missing (and why — disabled mod, unticked, or not installed), an

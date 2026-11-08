@@ -45,6 +45,7 @@ class ModNode:
     archive_manifest: list[str] = field(default_factory=list)
     skse_dlls: dict = field(default_factory=dict)   # path -> skse.DllInfo
     light_plugins: set = field(default_factory=set)  # root plugins, ESL-flagged
+    plugin_masters: dict = field(default_factory=dict)  # plugin -> [masters]
 
     @property
     def enabled(self) -> bool:

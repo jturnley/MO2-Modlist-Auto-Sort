@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from . import (archives, dag, decisions as decisions_mod, duplicates,
                loadcheck, masters, modlist, nexus, nexus_api,
                requirements, scan, shadow, skse, slots, tiers,
-               uncategorised)
+               uncategorised, winners)
 
 
 @dataclass
@@ -40,6 +40,9 @@ class SortResult:
     # plugins' winning copy went from light to full. None if plugins.txt
     # could not be read.
     slots: object = None
+    # winners.WinnerDiff: plugins, archives, SKSE plugins and scripts whose
+    # winning copy comes from a different mod in the new order.
+    winners: object = None
 
     @property
     def changed(self) -> bool:
@@ -175,7 +178,7 @@ def sort_profile(mo2_root: str, profile: str = "Default",
 
     movable = [n for n in dag.sortable(nodes) if n.enabled]
     disabled = [n for n in dag.sortable(nodes) if not n.enabled]
-    edges = dag.build_edges(movable, needs, runtime)              # [6]
+    edges = dag.build_edges(movable, needs, runtime, loaded)      # [6]
     if decisions is None:
         decisions = decisions_mod.Decisions(
             os.path.join(cache_dir, "user_rules.json"))
@@ -213,17 +216,25 @@ def sort_profile(mo2_root: str, profile: str = "Default",
             len(renamed),
             ", ".join("{} -> {}".format(a, b) for a, b in renamed[:3])
             + (", ..." if len(renamed) > 3 else ""))
-    problems = loadcheck.find(nodes, mods_dir, loaded, listed, runtime,
-                              active)
+    overwrite_dir = os.path.join(mo2_root, "overwrite")
+    # Judged on the new order: where two mods ship one plugin, only the
+    # copy that wins is read, so only its masters can be missing.
+    problems = loadcheck.find(final, mods_dir, loaded, listed, runtime,
+                              active, data_dir, overwrite_dir)
     if problems:
         report += "; {} thing(s) will not load".format(len(problems))
     # The left pane picks which copy of a plugin the game reads, and that
     # copy decides whether it takes a full slot. Counted before and after
     # so a sort can never push a list over the limit unannounced.
-    slot_change = slots.compare(nodes, final, mods_dir, profile_dir, data_dir,
-                                os.path.join(mo2_root, "overwrite"))
+    slot_change = slots.compare(
+        nodes, final, mods_dir, profile_dir, data_dir, overwrite_dir,
+        loadcheck.light_works(nodes, runtime, data_dir, overwrite_dir,
+                              mods_dir))
     if slot_change is not None and slot_change.changed:
         report += "; " + slot_change.headline
+    handed = winners.diff(nodes, final)
+    if handed:
+        report += "; " + handed.headline
     # A pair the user has already ruled on is settled, not outstanding.
     unresolved = [e for e in dropped
                   if not decisions.known(e.parent, e.child)]
@@ -233,7 +244,7 @@ def sort_profile(mo2_root: str, profile: str = "Default",
                       uncategorised.find(final, tiers.TIER_OUTPUT), unresolved,
                       dag.unhonoured_freezes(ordered, decisions.freezes,
                                              decisions.freezes_below),
-                      report, problems, slot_change)
+                      report, problems, slot_change, handed)
 
 
 def _reassemble_disabled(sortable_nodes, ordered, disabled):

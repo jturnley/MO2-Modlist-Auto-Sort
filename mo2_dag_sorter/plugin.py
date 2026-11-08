@@ -20,7 +20,7 @@ from . import (backups, category_ui, context_menu, dag,
                key_ui, nexus_api, resolve_ui, restore_ui,
                slots as slots_mod, stacks, vault_key)
 
-VERSION = mobase.VersionInfo(0, 10, 5, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 10, 6, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 BREAK = chr(10)
 
@@ -636,6 +636,21 @@ class DagSorterTool(mobase.IPluginTool):
                          .format(change.before, change.after))
             lines += ["  {} - now {}'s copy, was {}'s".format(p, now, was)
                       for p, now, was in change.became_full]
+        handed = getattr(result, "winners", None)
+        if handed:
+            lines.append("")
+            lines.append("CHANGES HANDS - a different mod's copy of these "
+                         "files wins in the new order:")
+            for kind in ("plugins", "archives", "SKSE plugins", "scripts"):
+                changes = handed.of(kind)
+                if not changes:
+                    continue
+                lines.append("  {} ({}):".format(kind, len(changes)))
+                lines += ["    {} - now {}, was {}".format(path, now, was)
+                          for _k, path, now, was in changes[:MAX_LISTED]]
+                if len(changes) > MAX_LISTED:
+                    lines.append("    ... and {} more".format(
+                        len(changes) - MAX_LISTED))
         if result.problems:
             lines.append("")
             lines.append("WILL NOT LOAD, whatever the order - reported, "
@@ -660,6 +675,9 @@ class DagSorterTool(mobase.IPluginTool):
                         "not load at all, whatever the order - see "
                         "Details. Nothing has been changed about them."
                         ).format(len(result.problems))
+        if handed:
+            summary += ("\n\n{} - see Details.").format(
+                handed.headline[0].upper() + handed.headline[1:])
         if change is not None and change.changed:
             summary += ("\n\nFull plugin slots: {} -> {} (limit {})."
                         ).format(change.before, change.after,

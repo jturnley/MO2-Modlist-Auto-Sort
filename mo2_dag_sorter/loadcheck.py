@@ -38,6 +38,7 @@ class Problem:
     mod: str
     item: str          # the plugin, archive or DLL that will not load
     kind: str          # "missing_master" | "orphan_archive" | "skse_runtime"
+                       # | "address_library" | "vr_esl"
     detail: str
 
     @property
@@ -150,9 +151,66 @@ def archive_loads(archive: str, loaded: set, listed: set) -> bool:
 
 # -- the report --------------------------------------------------------------
 
+def installed(rel: str, live, data_dir=None, overwrite_dir=None,
+              mods_dir=None) -> bool:
+    """Is this file (lowercased, Data-relative) anywhere the game sees it?
+
+    The mod folders are checked on disk, not only through file_manifest:
+    the scan keeps only the file types sorting cares about, and Address
+    Library's .bin and .csv are not among them. Trusting the manifest alone
+    reported a correctly installed Address Library as missing.
+    """
+    parts = rel.split("/")
+    for node in live:
+        if rel in node.file_manifest:
+            return True
+        if mods_dir and os.path.isfile(os.path.join(mods_dir, node.name,
+                                                    *parts)):
+            return True
+    for folder in (data_dir, overwrite_dir):
+        if folder and os.path.isfile(os.path.join(folder, *rel.split("/"))):
+            return True
+    return False
+
+
+def light_works(nodes, runtime, data_dir=None, overwrite_dir=None,
+                mods_dir=None) -> bool:
+    """Do ESL-flagged plugins count as light in this game?
+
+    Everywhere but Skyrim VR, yes. On VR only with Skyrim VR ESL Support,
+    an SKSE plugin; without it an .esl does not load at all and an ESL
+    flag on an .esp is ignored.
+    """
+    from . import skse
+    if not skse.is_vr(runtime):
+        return True
+    live = [n for n in nodes
+            if n.enabled and not n.is_separator and not n.is_unmanaged]
+    return installed(skse.VR_ESL_SUPPORT, live, data_dir, overwrite_dir,
+                     mods_dir)
+
+
+def _winners(live) -> dict:
+    """{plugin: the mod whose copy the game reads} - the last in order."""
+    out = {}
+    for node in live:
+        for plugin in node.plugins:
+            out[plugin] = node
+    return out
+
+
 def find(nodes, mods_dir: str, loaded: set, listed: set,
-         runtime=(), active=None) -> list[Problem]:
-    """Everything that will not load, in list order. Reads, never writes."""
+         runtime=(), active=None, data_dir=None,
+         overwrite_dir=None) -> list[Problem]:
+    """Everything that will not load, in list order. Reads, never writes.
+
+    Pass the nodes in the order being judged: where two mods ship the
+    same plugin, only the copy that wins is the one the game reads, so it
+    is the only one whose masters matter. Beeing Female NG ships its own
+    FMR- Immersive Effects.esp; the FMR mod's copy needs Fertility
+    Mode.esm, and reporting that while Beeing Female's copy wins would be
+    a false alarm.
+    """
     live = [n for n in nodes
             if n.enabled and not n.is_separator and not n.is_unmanaged]
     owner = {}
@@ -161,13 +219,20 @@ def find(nodes, mods_dir: str, loaded: set, listed: set,
             continue
         for plugin in node.plugins:
             owner.setdefault(plugin, node)
+    winner = _winners(live)
+    in_overwrite = plugins_in(overwrite_dir)
 
     out: list[Problem] = []
     for node in live:
         for plugin in node.plugins:
             if active is not None and plugin not in active:
                 continue            # switched off: its masters cannot matter
-            for master in _masters_of(node, plugin, mods_dir):
+            if winner.get(plugin) is not node or plugin in in_overwrite:
+                continue            # overridden: this copy is never read
+            needs = (getattr(node, "plugin_masters", None) or {}).get(plugin)
+            if needs is None:
+                needs = _masters_of(node, plugin, mods_dir)
+            for master in needs:
                 if master in loaded:
                     continue
                 out.append(Problem(node.name, plugin, "missing_master",
@@ -182,7 +247,70 @@ def find(nodes, mods_dir: str, loaded: set, listed: set,
                     "nothing loads this archive - no active plugin named "
                     "{}".format(" / ".join(archive_loaders(rel)))))
     out.extend(_runtime_problems(live, runtime))
+    out.extend(_address_library_problems(live, runtime, data_dir,
+                                         overwrite_dir, mods_dir))
+    out.extend(_vr_esl_problems(live, runtime, active, data_dir,
+                                overwrite_dir, mods_dir))
     return out
+
+
+LISTED = 5
+
+
+def _named(items) -> str:
+    items = list(items)
+    shown = ", ".join(items[:LISTED])
+    if len(items) > LISTED:
+        shown += " and {} more".format(len(items) - LISTED)
+    return shown
+
+
+def _address_library_problems(live, runtime, data_dir, overwrite_dir,
+                              mods_dir=None) -> list[Problem]:
+    """SKSE plugins that need Address Library for a version not installed.
+
+    Every plugin built on it opens one file at startup, named after the
+    game version. Without it each one fails with "failed to open address
+    library file" - one dialog per plugin - and does nothing. One problem
+    is reported for the file rather than one per plugin, because one
+    install fixes them all.
+    """
+    from . import skse
+    need = skse.address_library_file(runtime)
+    if need is None or installed(need, live, data_dir, overwrite_dir,
+                                 mods_dir):
+        return []
+    winning = {}
+    for node in live:
+        for rel, info in (getattr(node, "skse_dlls", None) or {}).items():
+            winning[rel] = (node, info)
+    users = sorted(os.path.basename(rel) for rel, (_n, info)
+                   in winning.items() if info.address_library)
+    if not users:
+        return []
+    version = ".".join(str(v) for v in runtime[:3])
+    return [Problem(
+        "not installed", os.path.basename(need), "address_library",
+        "{} SKSE plugin(s) need Address Library for game version {} and it "
+        "is not installed, so none of them will load ({}). Install "
+        "'Address Library for SKSE Plugins' for this version.".format(
+            len(users), version, _named(users)))]
+
+
+def _vr_esl_problems(live, runtime, active, data_dir, overwrite_dir,
+                     mods_dir=None) -> list[Problem]:
+    """.esl plugins on Skyrim VR with nothing to load them."""
+    if light_works(live, runtime, data_dir, overwrite_dir, mods_dir):
+        return []
+    esls = sorted(p for p in _winners(live)
+                  if p.endswith(".esl") and (active is None or p in active))
+    if not esls:
+        return []
+    return [Problem(
+        "{} plugins".format(len(esls)), ".esl plugins", "vr_esl",
+        "Skyrim VR loads no .esl plugin without 'Skyrim VR ESL Support', "
+        "which is not installed ({}). ESL-flagged .esp plugins load, but "
+        "each takes a full slot.".format(_named(esls)))]
 
 
 def _masters_of(node, plugin, mods_dir):

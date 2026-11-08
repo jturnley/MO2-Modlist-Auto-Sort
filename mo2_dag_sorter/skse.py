@@ -25,6 +25,7 @@ table is the fact.
 from __future__ import annotations
 
 import os
+import re
 import struct
 from dataclasses import dataclass
 
@@ -51,6 +52,19 @@ class DllInfo:
     runtimes: tuple = ()           # exact runtimes, when not independent
     plugin_version: int = 0
     file_version: tuple = ()
+    names_address_library: bool = False   # the file name is in the DLL
+
+    @property
+    def address_library(self) -> bool:
+        """Does this plugin need Address Library to load?
+
+        A 1.6-era plugin says so in its version block. An older one does
+        not, but one that uses it carries the file name it opens - the
+        same string that ends up in "failed to open address library
+        file" when it is missing.
+        """
+        return bool(self.independence & ADDRESS_LIBRARY
+                    or self.names_address_library)
 
     def loads_on(self, runtime) -> bool | None:
         """True, False, or None when there is no telling."""
@@ -76,6 +90,37 @@ class DllInfo:
         """Something to compare two builds of one plugin by."""
         return self.file_version or ((self.plugin_version,)
                                      if self.plugin_version else ())
+
+
+# How a plugin built against Address Library names the file it opens:
+# "Data/SKSE/Plugins/versionlib-{}.bin", "version-%d-%d-%d-%d.bin", or for
+# VR "version-1-4-15-0.csv". Either slash; any case.
+ADDRESS_LIBRARY_NAME = re.compile(
+    rb"(?i)skse[/" + bytes((92, 92)) + rb"]plugins[/" + bytes((92, 92))
+    + rb"]version(?:lib)?-|versionlib-")
+
+
+def address_library_file(runtime) -> str | None:
+    """The Address Library file this game version needs, lowercased and
+    relative to the game's Data folder, or None if the version is unknown.
+
+    Anniversary Edition reads versionlib-*.bin, SE 1.5 version-*.bin, and
+    VR the CSV that "VR Address Library for SKSEVR" ships.
+    """
+    if not runtime:
+        return None
+    dashed = "-".join(str(v) for v in (tuple(runtime) + (0, 0, 0, 0))[:4])
+    if is_vr(runtime):
+        name = "version-{}.csv".format(dashed)
+    elif tuple(runtime[:2]) >= (1, 6):
+        name = "versionlib-{}.bin".format(dashed)
+    else:
+        name = "version-{}.bin".format(dashed)
+    return DLL_DIR + name
+
+
+# The SKSE plugin that makes ESL-flagged and .esl plugins work on VR.
+VR_ESL_SUPPORT = DLL_DIR + "skyrimvresl.dll"
 
 
 def is_vr(runtime) -> bool:
@@ -159,6 +204,7 @@ def read_dll(path: str) -> DllInfo | None:
     if data[:2] != b"MZ":
         return None
     info = DllInfo()
+    info.names_address_library = ADDRESS_LIBRARY_NAME.search(data) is not None
     try:
         directory, offset = _sections(data)
         info.file_version = _file_version(data, directory, offset)

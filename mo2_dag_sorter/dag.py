@@ -413,14 +413,63 @@ def light_edges(nodes) -> list[DependencyEdge]:
     return out
 
 
-def build_edges(nodes, needs=None, runtime=()) -> list[DependencyEdge]:
+def loadable_edges(nodes, loaded) -> list[DependencyEdge]:
+    """Two mods shipping one plugin, only one copy loadable: it wins.
+
+    Beeing Female NG ships its own FMR- Immersive Effects.esp and
+    Fertility Adventures.esp, rebuilt on Beeing Female instead of
+    Fertility Mode. The mods those names come from ship copies that need
+    Fertility Mode.esm. Whichever copy wins is the one the game reads, and
+    only one of them can load - so that one goes on top, whatever the
+    requirement lists or the file overlap say. ``loaded`` is every plugin
+    the game will load; None when that cannot be known, and then nothing
+    is decided here.
+    """
+    if loaded is None:
+        return []
+    holders: dict[str, list] = defaultdict(list)
+    for node in nodes:
+        if node.is_tool:
+            continue
+        for plugin in node.plugins:
+            holders[plugin].append(node)
+    out: list[DependencyEdge] = []
+    seen: set = set()
+    for plugin in sorted(holders):
+        group = holders[plugin]
+        if len(group) < 2:
+            continue
+        missing = {}
+        for node in group:
+            needs = (getattr(node, "plugin_masters", None) or {}).get(plugin)
+            if needs is None:
+                continue                  # not read: no opinion on this copy
+            missing[node.name] = [m for m in needs if m not in loaded]
+        good = [n for n in group if missing.get(n.name) == []]
+        bad = [n for n in group if missing.get(n.name)]
+        for broken in bad:
+            for works in good:
+                if (broken.name, works.name) in seen:
+                    continue
+                seen.add((broken.name, works.name))
+                out.append(DependencyEdge(
+                    broken.name, works.name, "loadable_plugin",
+                    "{}: {}'s copy has all its masters; {}'s needs {}".format(
+                        plugin, works.name, broken.name,
+                        ", ".join(missing[broken.name]))))
+    return out
+
+
+def build_edges(nodes, needs=None, runtime=(), loaded=None
+                ) -> list[DependencyEdge]:
     from . import skse
     dll = skse_edges(nodes, runtime)
     light = light_edges(nodes)
+    usable = loadable_edges(nodes, loaded)
     settled = frozenset(tuple(sorted((e.parent, e.child)))
-                        for e in dll + light)
+                        for e in dll + light + usable)
     return (conflict_edges(nodes, settled, vr=skse.is_vr(runtime))
-            + dll + light + master_edges(nodes)
+            + dll + light + usable + master_edges(nodes)
             + asset_path_edges(nodes) + name_extension_edges(nodes)
             + requirement_edges(nodes, needs or {})
             + shader_edges(nodes))
@@ -674,7 +723,7 @@ def acyclic_edges(nodes, edges, decisions=None) -> tuple[
     # Both of these are read off disk rather than inferred, so they go in
     # first and a conflict edge yields to them.
     factual = {"master_requirement", "asset_path",
-               "shader_framework", "skse_runtime"}
+               "shader_framework", "skse_runtime", "loadable_plugin"}
     masters_first = sorted(
         (e for e in edges if e.reason in factual),
         key=lambda e: (order.get(e.parent, 0), order.get(e.child, 0)))
@@ -859,6 +908,8 @@ EDGE_WORDS = {
     "shader_framework": "{child} uses shaders that {parent} provides",
     "light_plugin": "{child} ships an ESL-flagged copy of a plugin that "
                     "{parent} ships full-size",
+    "loadable_plugin": "{child}'s copy of a plugin they both ship has all "
+                       "its masters and {parent}'s does not",
 }
 
 
@@ -881,7 +932,8 @@ EDGE_WORDS = {
 # overruled, so a freeze that would break one is refused and the user told
 # why.
 HARD_REASONS = frozenset(("master_requirement", "asset_path",
-                          "shader_framework", "skse_runtime"))
+                          "shader_framework", "skse_runtime",
+                          "loadable_plugin"))
 
 
 def freeze_blockers(order, edges, mod: str, target: str,
