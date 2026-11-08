@@ -1328,7 +1328,7 @@ check("it retries while the view is still missing",
 check("and keeps checking after it succeeds, in case the view is rebuilt",
       "self._timer.start(self.SLOW)" in _menu_src, True)
 check("a view that is already hooked is not hooked twice",
-      "if view.property(HOOKED):" in _menu_src, True)
+      "if _hook_on(view) is not None:" in _menu_src, True)
 check("a missing active popup is not taken as proof there is no menu",
       "topLevelWidgets()" in _menu_src, True)
 check("a dead window stops the keeper instead of raising",
@@ -1364,8 +1364,14 @@ check("the module keeps the builder where a separate tool can reach it",
 check("remembering one half does not erase the other",
       "if window is not None:" in _menu_src
       and "if build is not None:" in _menu_src, True)
-check("the stale hooked flag is cleared so a repair is never a no-op",
-      "view.setProperty(HOOKED, False)" in _menu_src, True)
+check("a repair takes the old filter off first, so it is never a no-op",
+      "_remove(view)" in _menu_src, True)
+check("every installed filter is held, so the cycle collector cannot "
+      "empty it - the reason the entries used to vanish",
+      "_hooks[key] = hook" in _menu_src and "_hooks: dict = {}" in _menu_src,
+      True)
+check("hooked means a live filter of ours, not a flag on the widget",
+      "HOOKED" not in _menu_src and "def _hook_on(view):" in _menu_src, True)
 check("a missing mod list is reported as such, not as success",
       "could not be found in this window" in _menu_src, True)
 check("a destroyed remembered window falls back to asking Qt",

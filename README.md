@@ -199,10 +199,17 @@ unavailable.
 ## If the right-click entries go missing
 
 MO2 has no plugin API for the mod list's right-click menu — it is built in
-C++ — so the sorter attaches itself to the widget instead. That attachment
-can be lost. MO2 rebuilds the mod list when the set of installed plugins
-changes, and removing an unrelated plugin has been seen to take these
-entries with it.
+C++ — so the sorter attaches itself to the widget instead.
+
+Before 0.10.2 the entries vanished after almost anything you did in MO2.
+The attachment is a Python object parented to MO2's widget, and nothing on
+the Python side held on to it, so Python's garbage collector deleted it the
+next time it ran. The widget still looked attached, so nothing put it back.
+The sorter now keeps a reference to every attachment it makes, and
+"attached" means a live attachment rather than a flag on the widget.
+
+It can still be lost the ordinary way: MO2 rebuilds the mod list when the
+set of installed plugins changes.
 
 A watchdog notices and puts them back within a few seconds. If it has not,
 **Tools → Restore Right-Click Menu** does it immediately and tells you what
@@ -211,7 +218,7 @@ it found:
 | What it says | What it means |
 | --- | --- |
 | The entries were missing. Attached. | Fixed. |
-| They were already attached, and have been reattached anyway. | They were there; the flag can outlive the filter, so it hooked again regardless. |
+| They were already attached, and have been reattached anyway. | They were there; the old attachment was replaced with a fresh one regardless. |
 | The sorter has not finished starting up yet. | Run it once MO2's window is up. |
 | MO2's mod list could not be found in this window. | A newer MO2 renamed or restructured it. Please open an issue. |
 

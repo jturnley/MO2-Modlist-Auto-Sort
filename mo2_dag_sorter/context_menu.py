@@ -98,20 +98,77 @@ class MenuFilter(QObject):
             pass
 
 
-HOOKED = "_dag_sorter_menu_hook"
+# Every filter this module has installed, keyed by the C++ address of the
+# view it sits on.
+#
+# This dictionary is what keeps the hook alive, and it has to exist. The
+# filter is a Python subclass of QObject, parented to MO2's view. Qt keeps
+# the C++ half alive through the parent, but nothing kept the Python half:
+# its only references were to and from the view's Python wrapper, which
+# findChild makes fresh on every call. That is a cycle nothing reachable
+# points into, so Python's cycle collector deleted it the next time it ran
+# - which is whenever enough Python has run, so in practice "whenever the
+# user does anything". The C++ filter stayed installed with no Python
+# eventFilter behind it, every right-click went through it untouched, and
+# the flag that said "hooked" stayed set, so nothing put it back.
+#
+# Being in this dictionary is now what "hooked" means. An entry leaves when
+# Qt destroys the filter, which happens when the view itself goes.
+_hooks: dict = {}
+
+
+def _key(view):
+    """The view's C++ address - the same however many wrappers it has."""
+    try:
+        from PyQt6 import sip
+        return sip.unwrapinstance(view)
+    except (ImportError, TypeError, RuntimeError):
+        return id(view)
+
+
+def _hook_on(view):
+    """Our live filter on this view, or None."""
+    hook = _hooks.get(_key(view))
+    if hook is None:
+        return None
+    try:
+        hook.objectName()              # raises if Qt has deleted it
+    except RuntimeError:
+        _hooks.pop(_key(view), None)
+        return None
+    return hook
+
+
+def _remove(view) -> None:
+    """Take our filter off this view, if it has one."""
+    hook = _hooks.pop(_key(view), None)
+    if hook is None:
+        return
+    try:
+        view.viewport().removeEventFilter(hook)
+        view.removeEventFilter(hook)
+        hook.deleteLater()
+    except RuntimeError:
+        pass
 
 
 def install(window, build):
-    """Hook the menu. Returns the filter, or None if the view was not found."""
+    """Hook the menu. Returns the filter, or None if the view was not found
+    or already has one."""
     view = find_view(window)
     if view is None:
         return None
-    if view.property(HOOKED):
+    if _hook_on(view) is not None:
         return None                    # already hooked; do not stack filters
     hook = MenuFilter(view, build)
     view.viewport().installEventFilter(hook)
     view.installEventFilter(hook)
-    view.setProperty(HOOKED, True)
+    key = _key(view)
+    _hooks[key] = hook
+    # When MO2 destroys the view, the filter goes with it. Drop the entry
+    # then, so a new view that happens to reuse the address is hooked.
+    hook.destroyed.connect(lambda *_a, k=key, h=hook: (
+        _hooks.pop(k, None) if _hooks.get(k) is h else None))
     return hook
 
 
@@ -126,7 +183,7 @@ class Keeper(QObject):
     nothing to do with this plugin.
 
     So it is checked on a timer instead of assumed. The check is one
-    findChild against a property flag, which costs nothing, and it never
+    findChild and a dictionary lookup, which costs nothing, and it never
     stacks a second filter on a view that already has one.
     """
 
@@ -221,7 +278,7 @@ def attached(window=None) -> bool:
         view = find_view(window)
     except RuntimeError:
         return False
-    return view is not None and bool(view.property(HOOKED))
+    return view is not None and _hook_on(view) is not None
 
 
 def reattach(window=None) -> tuple:
@@ -247,12 +304,10 @@ def reattach(window=None) -> tuple:
                        "there is nothing to attach to. This usually means a "
                        "newer MO2 renamed or restructured it. Both actions "
                        "are still on the Tools menu.")
-    if view.property(HOOKED):
-        # Forget the flag and hook again: the flag can outlive the filter
-        # if MO2 tore the filter down without replacing the widget, and
-        # "already attached" is the least useful answer to a complaint
-        # that it is not working.
-        view.setProperty(HOOKED, False)
+    # Take ours off and hook again, rather than answering "already
+    # attached": that is the least useful reply to someone saying it is
+    # not working, and a fresh filter costs nothing.
+    _remove(view)
     hook = install(window, build)
     if hook is None:
         return False, "The mod list refused the hook. Restart MO2."
