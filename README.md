@@ -81,7 +81,10 @@ the order you already had is kept.
 - **Full plugin slots, before and after.** The left pane decides which copy of a plugin the game reads, and an ESL-flagged copy takes no full slot. If the new order changes the count, the confirm dialog shows it, lists the plugins whose winning copy is no longer ESL-flagged, and warns when the result goes past the game's 254.
 - **Things that will not load at all**, whatever the order: a plugin whose
   master is missing (and why — disabled mod, unticked, or not installed), an
-  archive no active plugin opens, an SKSE DLL built for another game version.
+  archive no active plugin opens, an SKSE DLL built for another game version,
+  SKSE plugins whose Address Library file for this game version is missing,
+  and `.esl` plugins on Skyrim VR without Skyrim VR ESL Support. Missing
+  masters are judged on the copy of each plugin that wins in the new order.
   **Reported only.** Nothing is disabled, moved or deleted on the strength of
   it. The game's own Data folder and `overwrite/` count as installed, so
   `Update.esm` and Creation Club content are never called missing.
@@ -99,6 +102,7 @@ mo2_dag_sorter/       the plugin - copy this folder into MO2/plugins/
   skse.py             what an SKSE DLL says about itself
   loadcheck.py        what will not load - reported, never acted on
   slots.py            which copy of a plugin wins, and full-slot counts
+  winners.py          which mod provides each plugin/archive/DLL/script, before and after
   modlist.py          reading and writing modlist.txt
   nexus.py            v1 metadata + cache    requirements.py  v2 GraphQL
   decisions.py        user_rules.json        backups.py       undo
