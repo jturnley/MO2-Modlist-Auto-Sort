@@ -103,6 +103,7 @@ mo2_dag_sorter/       the plugin - copy this folder into MO2/plugins/
   loadcheck.py        what will not load - reported, never acted on
   slots.py            which copy of a plugin wins, and full-slot counts
   winners.py          which mod provides each plugin/archive/DLL/script, before and after
+  launchcheck.py      will SKSE load what is installed - before launch, and on install
   modlist.py          reading and writing modlist.txt
   nexus.py            v1 metadata + cache    requirements.py  v2 GraphQL
   decisions.py        user_rules.json        backups.py       undo
@@ -207,6 +208,17 @@ and the other to plain text in `ModOrganizer.ini`.
 no credential, so they resolve for everyone. A key is what lets the tiering
 look up a game's category table on v1 when MO2's own connection is
 unavailable.
+
+## SKSE plugin check
+
+Before SKSE or the game is launched from MO2, and right after a mod is installed, the sorter checks that SKSE will load what is installed, and warns if it will not:
+
+- **SKSE itself** — the runtime DLL for your game version (`skse64_1_6_1170.dll`). Without it the loader will not start the game.
+- **Each SKSE plugin against your game version** — read from its export table and version block.
+- **Each SKSE plugin against your SKSE version** — the oldest SKSE it accepts, which SKSE enforces ("requires newer script extender").
+- **Address Library** for the version you run, for the plugins built on it.
+
+Only the copy of each plugin that wins in the mod order is judged, since it is the only one SKSE sees. The warning offers **Launch anyway** or **Cancel launch**, and can be told not to repeat itself about the same problems. Nothing is ever disabled or changed. MO2's own Script Extender Plugin Checker reads SKSE's log, so it reports after the game has run; this one reads the files, so it reports before. Results are cached by file size and date, so a launch costs a fraction of a second. Turn it off with the `check_skse_plugins` setting.
 
 ## If the right-click entries go missing
 

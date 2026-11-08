@@ -8,6 +8,7 @@ argue with after the fact.
 
 from __future__ import annotations
 
+import json
 import os
 
 import mobase
@@ -17,10 +18,10 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from . import (backups, category_ui, context_menu, dag,
                decisions as decisions_mod,
                incremental, modlist, nexus, nexus_bridge, pipeline,
-               key_ui, nexus_api, resolve_ui, restore_ui,
-               slots as slots_mod, stacks, vault_key)
+               key_ui, launchcheck, loadcheck, nexus_api, resolve_ui,
+               restore_ui, skse, slots as slots_mod, stacks, vault_key)
 
-VERSION = mobase.VersionInfo(0, 10, 6, mobase.ReleaseType.BETA)
+VERSION = mobase.VersionInfo(0, 10, 7, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 BREAK = chr(10)
 
@@ -44,6 +45,15 @@ class DagSorterTool(mobase.IPluginTool):
             pass                       # an MO2 build without the callback
         try:
             organizer.onUserInterfaceInitialized(self._ui_ready)
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        # Check SKSE plugins at the two moments it costs something to get
+        # wrong: when the game is about to start, and when the mod that
+        # brought a plugin has just been installed.
+        try:
+            skse.load_cache(self._skse_cache())
+            organizer.onAboutToRun(self._skse_before_launch)
+            organizer.modList().onModInstalled(self._skse_on_install)
         except (AttributeError, RuntimeError, TypeError):
             pass
         # Record the menu builder now, not in _ui_ready. If the callback
@@ -167,6 +177,17 @@ class DagSorterTool(mobase.IPluginTool):
                 "game_domain",
                 self.tr("Nexus game domain used for category lookups."),
                 "skyrimspecialedition"),
+            mobase.PluginSetting(
+                "check_skse_plugins",
+                self.tr("Before SKSE or the game is launched, and after a "
+                        "mod is installed, check that its SKSE plugins will "
+                        "load - game version, SKSE version, Address Library "
+                        "- and warn if not."), True),
+            mobase.PluginSetting(
+                "skse_check_ignored",
+                self.tr("SKSE problems you chose not to be warned about "
+                        "again. Clear it to be warned about them again."),
+                ""),
         ]
 
     def displayName(self) -> str:
@@ -709,6 +730,128 @@ class DagSorterTool(mobase.IPluginTool):
     def _instance_root(self) -> str:
         """The instance folder - one level above overwrite/."""
         return os.path.dirname(os.path.normpath(self._organizer.overwritePath()))
+
+    # -- SKSE plugin check -------------------------------------------------
+    def _skse_cache(self) -> str:
+        return os.path.join(self._organizer.pluginDataPath(),
+                            "skse_dll_cache.json")
+
+    def _skse_game_dir(self):
+        return (self._game_dir()
+                or loadcheck.game_directory(self._instance_root()))
+
+    def _enabled_mod_folders(self) -> list:
+        """[(name, folder)] of the enabled mods, lowest priority first.
+
+        Read from MO2 rather than modlist.txt, which MO2 writes a moment
+        after a change and which can be behind at the instant of a launch.
+        """
+        mods = []
+        mod_list = self._organizer.modList()
+        for name in mod_list.allModsByProfilePriority():
+            try:
+                state = mod_list.state(name)
+                try:
+                    active = bool(state & mobase.ModState.ACTIVE)
+                except TypeError:
+                    active = bool(int(state) & int(mobase.ModState.ACTIVE))
+                if not active:
+                    continue
+                mod = mod_list.getMod(name)
+                if mod is None or mod.isSeparator() or mod.isForeign():
+                    continue
+                mods.append((name, mod.absolutePath()))
+            except (AttributeError, RuntimeError, TypeError):
+                continue
+        return mods
+
+    def _skse_ignored(self) -> set:
+        raw = self._organizer.pluginSetting(self.name(), "skse_check_ignored")
+        try:
+            return set(json.loads(raw)) if raw else set()
+        except (TypeError, ValueError):
+            return set()
+
+    def _skse_ignore(self, problems) -> None:
+        keep = self._skse_ignored() | {launchcheck.fingerprint(p)
+                                       for p in problems}
+        self._organizer.setPluginSetting(self.name(), "skse_check_ignored",
+                                         json.dumps(sorted(keep)))
+
+    def _skse_before_launch(self, path, *_rest) -> bool:
+        """MO2's about-to-run hook. True lets the program start.
+
+        Accepts both of MO2's signatures - (path) and (path, folder, args).
+        Any failure of the check itself lets the launch go ahead: this is a
+        warning, and a broken warning must never stand between the user
+        and their game.
+        """
+        try:
+            if not self._organizer.pluginSetting(self.name(),
+                                                 "check_skse_plugins"):
+                return True
+            if not launchcheck.is_launch(path):
+                return True
+            problems = launchcheck.check(self._enabled_mod_folders(),
+                                         self._skse_game_dir(),
+                                         self._organizer.overwritePath())
+            skse.save_cache(self._skse_cache())
+            ignored = self._skse_ignored()
+            problems = [p for p in problems
+                        if launchcheck.fingerprint(p) not in ignored]
+        except Exception:
+            return True
+        if not problems:
+            return True
+        return self._warn_before_launch(problems)
+
+    def _warn_before_launch(self, problems) -> bool:
+        from PyQt6.QtWidgets import QCheckBox
+        box = QMessageBox(QApplication.activeWindow())
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(self.tr("SKSE plugin check"))
+        box.setText(self.tr("SKSE will not load {} of the things below.")
+                    .format(len(problems)) if len(problems) > 1 else
+                    self.tr("SKSE will not load the plugin below."))
+        shown = [p.headline for p in problems[:3]]
+        if len(problems) > 3:
+            shown.append(self.tr("... and {} more - see Details.").format(
+                len(problems) - 3))
+        box.setInformativeText("\n\n".join(shown) + "\n\n" + self.tr(
+            "The game will start without them. Nothing has been changed."))
+        box.setDetailedText("\n".join(p.headline for p in problems))
+        launch = box.addButton(self.tr("Launch anyway"),
+                               QMessageBox.ButtonRole.AcceptRole)
+        cancel = box.addButton(self.tr("Cancel launch"),
+                               QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)
+        remember = QCheckBox(self.tr("Don't warn me about these again"))
+        box.setCheckBox(remember)
+        box.exec()
+        if remember.isChecked():
+            self._skse_ignore(problems)
+        return box.clickedButton() is launch
+
+    def _skse_on_install(self, mod) -> None:
+        """After an install: can this mod's SKSE plugins load at all?"""
+        try:
+            if not self._organizer.pluginSetting(self.name(),
+                                                 "check_skse_plugins"):
+                return
+            problems = launchcheck.check_mod(mod.name(), mod.absolutePath(),
+                                             self._skse_game_dir())
+            skse.save_cache(self._skse_cache())
+        except Exception:
+            return
+        if not problems:
+            return
+        QMessageBox.warning(
+            QApplication.activeWindow(), self.tr("SKSE plugin check"),
+            self.tr("{} was installed, but SKSE will not load its "
+                    "plugin(s):").format(mod.name()) + "\n\n"
+            + "\n\n".join(p.headline for p in problems) + "\n\n"
+            + self.tr("Check the mod's page for a version that matches your "
+                      "game and SKSE."))
 
     def _game_dir(self):
         """The game folder MO2 is managing, or None to read it from the INI."""

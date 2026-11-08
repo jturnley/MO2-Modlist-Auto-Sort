@@ -2128,6 +2128,147 @@ with _tempfile.TemporaryDirectory() as _mods:
     check("Address Library is found on disk even though the scan skips .bin",
           loadcheck.find([_needs_al, _al_disk], _mods, set(), set(), _AE), [])
 
+# --- 0.10.7: SKSE compatibility, checked before launch and on install -------
+from mo2_dag_sorter import launchcheck as _launch
+
+_REQ = skse.pack_runtime((2, 2, 5))
+with _tempfile.TemporaryDirectory() as _folder:
+    _dll = os.path.join(_folder, "x.dll")
+    with open(_dll, "wb") as _fh:
+        _fh.write(_pe(["SKSEPlugin_Load", "SKSEPlugin_Version"],
+                      independence=skse.ADDRESS_LIBRARY,
+                      runtimes=[0] * 16 + [_REQ]))
+    check("the oldest SKSE a plugin accepts is read from its version block",
+          skse.read_dll(_dll).skse_required, _REQ)
+_wants = skse.DllInfo(version_data=True, skse_required=_REQ)
+check("a plugin asking for SKSE 2.2.5 is refused by 2.2.4, not by 2.2.8",
+      (_wants.needs_newer_skse((2, 2, 4)), _wants.needs_newer_skse((2, 2, 8))),
+      (True, False))
+check("a value with no major version is not a requirement",
+      skse.DllInfo(skse_required=0x00020000).needs_newer_skse((2, 2, 8)),
+      False)
+check("the packing round-trips", skse.unpack_version(_REQ), (2, 2, 5))
+
+
+def _write(path, raw):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(raw)
+
+
+_AE_DLL = _pe(["SKSEPlugin_Load", "SKSEPlugin_Version"],
+              independence=skse.SIGNATURES)
+_SE_DLL = _pe(["SKSEPlugin_Load", "SKSEPlugin_Query"])
+_NEEDS_NEW = _pe(["SKSEPlugin_Load", "SKSEPlugin_Version"],
+                 independence=skse.SIGNATURES,
+                 runtimes=[0] * 16 + [skse.pack_runtime((9, 0, 0))])
+_NEEDS_AL = _pe(["SKSEPlugin_Load", "SKSEPlugin_Version"],
+                independence=skse.ADDRESS_LIBRARY)
+
+with _tempfile.TemporaryDirectory() as _root:
+    _game = os.path.join(_root, "game")
+    _mods = os.path.join(_root, "mods")
+    _write(os.path.join(_game, "SkyrimSE.exe"), _pe(file_version=(1, 6, 1170, 0)))
+    _write(os.path.join(_game, "skse64_loader.exe"), b"MZ")
+    _write(os.path.join(_game, "skse64_1_6_640.dll"), b"MZ")
+
+    _inst = skse.skse_install(_game, (1, 6, 1170, 0))
+    check("SKSE for another game version is not SKSE for this one",
+          (_inst.found, _inst.loader, _inst.others),
+          (False, True, ["skse64_1_6_640.dll"]))
+    check("and it is reported as stopping the game from starting",
+          [(p.item, p.kind, "1.6.640" in p.detail or "640" in p.detail)
+           for p in _launch.check([], _game)],
+          [("skse64_1_6_1170.dll", "skse_missing", True)])
+
+    _write(os.path.join(_game, "skse64_1_6_1170.dll"),
+           _pe(file_version=(0, 2, 2, 8)))
+    check("SKSE's own version is read, without the leading zero",
+          skse.skse_install(_game, (1, 6, 1170, 0)).version, (2, 2, 8))
+    check("a correct setup reports nothing", _launch.check([], _game), [])
+
+    _write(os.path.join(_mods, "Old Port", "SKSE", "Plugins", "meter.dll"),
+           _SE_DLL)
+    _write(os.path.join(_mods, "Wants New SKSE", "skse", "plugins",
+                        "fancy.dll"), _NEEDS_NEW)
+    _mod_list = [("Old Port", os.path.join(_mods, "Old Port")),
+                 ("Wants New SKSE", os.path.join(_mods, "Wants New SKSE"))]
+    _found = _launch.check(_mod_list, _game)
+    check("a plugin for another game version, and one wanting a newer SKSE, "
+          "are both reported",
+          sorted((p.mod, p.item, p.kind) for p in _found),
+          [("Old Port", "meter.dll", "skse_runtime"),
+           ("Wants New SKSE", "fancy.dll", "skse_too_old")])
+    check("with the versions spelled out",
+          [p.detail for p in _found if p.kind == "skse_too_old"][0].startswith(
+              "needs SKSE 9.0.0 or newer, and 2.2.8 is installed"), True)
+
+    _write(os.path.join(_mods, "AE Update", "SKSE", "Plugins", "meter.dll"),
+           _AE_DLL)
+    _later = _mod_list + [("AE Update", os.path.join(_mods, "AE Update"))]
+    check("only the copy that wins is judged - a working copy above a broken "
+          "one clears it",
+          sorted(p.item for p in _launch.check(_later, _game)), ["fancy.dll"])
+    _earlier = [("AE Update", os.path.join(_mods, "AE Update"))] + _mod_list
+    check("and a broken copy above a working one is reported",
+          sorted(p.item for p in _launch.check(_earlier, _game)),
+          ["fancy.dll", "meter.dll"])
+
+    _write(os.path.join(_mods, "Uses AL", "SKSE", "Plugins", "al.dll"),
+           _NEEDS_AL)
+    _with_al = [("Uses AL", os.path.join(_mods, "Uses AL"))]
+    check("Address Library missing for this version is reported",
+          [(p.item, p.kind) for p in _launch.check(_with_al, _game)],
+          [("versionlib-1-6-1170-0.bin", "address_library")])
+    _write(os.path.join(_mods, "Address Library", "SKSE", "Plugins",
+                        "versionlib-1-6-1170-0.bin"), b"")
+    check("and not once it is installed",
+          _launch.check(_with_al + [("Address Library", os.path.join(
+              _mods, "Address Library"))], _game), [])
+
+    check("on install, only the new mod's own plugins are judged",
+          [(p.mod, p.kind) for p in _launch.check_mod(
+              "Wants New SKSE", os.path.join(_mods, "Wants New SKSE"), _game)],
+          [("Wants New SKSE", "skse_too_old")])
+    check("an unknown game version claims nothing",
+          _launch.check(_mod_list, os.path.join(_root, "nowhere")), [])
+
+    _cache_file = os.path.join(_root, "cache.json")
+    skse.save_cache(_cache_file)
+    _kept = dict(skse._cache)
+    skse._cache.clear()
+    skse.load_cache(_cache_file)
+    _key = os.path.normcase(os.path.abspath(
+        os.path.join(_mods, "Wants New SKSE", "skse", "plugins", "fancy.dll")))
+    check("the DLL cache survives a save and a reload",
+          skse._cache[_key][1] == _kept[_key][1], True)
+
+check("the game and SKSE's loader count as a launch, other tools do not",
+      [_launch.is_launch(p) for p in ("C:/Games/skse64_loader.exe",
+                                      "D:/x/SkyrimSE.exe", "D:/x/SkyrimVR.exe",
+                                      "C:/Tools/LOOT.exe", None)],
+      [True, True, True, False, False])
+check("a problem has a stable name for 'don't warn me again'",
+      _launch.fingerprint(loadcheck.Problem("Mod", "a.dll", "skse_runtime",
+                                            "x")),
+      "skse_runtime|a.dll|Mod")
+
+_plugin_src5 = io.open(os.path.join(os.path.dirname(os.path.abspath(
+    _pipeline.__file__)), "plugin.py"), encoding="utf-8").read()
+check("the check runs before a launch and after an install",
+      ("organizer.onAboutToRun(self._skse_before_launch)" in _plugin_src5
+       and "onModInstalled(self._skse_on_install)" in _plugin_src5), True)
+check("a failure of the check itself never blocks the launch",
+      "        except Exception:\n            return True\n" in
+      _plugin_src5.replace(chr(13) + chr(10), chr(10)), True)
+check("the warning offers to launch anyway, defaults to cancel, and can be "
+      "silenced", ("Launch anyway" in _plugin_src5
+                   and "box.setDefaultButton(cancel)" in _plugin_src5
+                   and "Don't warn me about these again" in _plugin_src5),
+      True)
+check("and it can be switched off", '"check_skse_plugins"' in _plugin_src5,
+      True)
+
 
 if failures:
     print("FAILED")

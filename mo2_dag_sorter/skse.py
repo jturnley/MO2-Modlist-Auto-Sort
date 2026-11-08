@@ -24,6 +24,8 @@ table is the fact.
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import os
 import re
 import struct
@@ -53,6 +55,21 @@ class DllInfo:
     plugin_version: int = 0
     file_version: tuple = ()
     names_address_library: bool = False   # the file name is in the DLL
+    skse_required: int = 0         # oldest SKSE it accepts, packed; 0 = any
+
+    def needs_newer_skse(self, skse_version) -> bool:
+        """Would SKSE ``skse_version`` refuse this plugin as too old for it?
+
+        SKSE compares the plugin's seVersionRequired against its own packed
+        version and declines the plugin - "requires newer script extender"
+        in its log - when the plugin asks for more. A value with no major
+        version is not a version anyone wrote on purpose and is ignored.
+        """
+        if not self.skse_required or not skse_version:
+            return False
+        if (self.skse_required >> 24) < 1:
+            return False
+        return self.skse_required > pack_runtime(skse_version)
 
     @property
     def address_library(self) -> bool:
@@ -241,6 +258,7 @@ def _version_block(data: bytes, at: int, info: DllInfo) -> None:
     info.plugin_version = struct.unpack_from("<I", data, at + 4)[0]
     tail = at + 8 + 256 + 256 + 252
     info.independence = struct.unpack_from("<I", data, tail + 4)[0]
+    info.skse_required = struct.unpack_from("<I", data, tail + 8 + 64)[0]
     runtimes = []
     for i in range(16):
         value = struct.unpack_from("<I", data, tail + 8 + 4 * i)[0]
@@ -248,6 +266,123 @@ def _version_block(data: bytes, at: int, info: DllInfo) -> None:
             break
         runtimes.append(value)
     info.runtimes = tuple(runtimes)
+
+
+def unpack_version(packed: int) -> tuple:
+    """The inverse of pack_runtime: (major, minor, build)."""
+    return (packed >> 24, (packed >> 16) & 0xFF, (packed >> 4) & 0xFFF)
+
+
+# -- SKSE itself ----------------------------------------------------------------
+
+@dataclass
+class SkseInstall:
+    wanted: str            # the runtime DLL this game version needs
+    loader: bool           # skse64_loader.exe / sksevr_loader.exe present
+    found: bool            # ``wanted`` present
+    version: tuple         # SKSE's own version, e.g. (2, 2, 8); () if unknown
+    others: list           # runtime DLLs present for other game versions
+
+
+SKSE_RUNTIME_DLL = re.compile(r"^(skse64|sksevr)_\d+_\d+_\d+\.dll$")
+
+
+def skse_install(game_dir, runtime) -> SkseInstall | None:
+    """What SKSE the game folder holds, judged against the game version.
+
+    SKSE is one runtime DLL per game version - skse64_1_6_1170.dll - and a
+    loader that refuses to start the game when the one matching the
+    executable is missing. Its version resource reads 0.2.2.8 for SKSE
+    2.2.8, so the leading zero is dropped.
+    """
+    if not game_dir or not runtime:
+        return None
+    prefix, loader = (("sksevr_", "sksevr_loader.exe") if is_vr(runtime)
+                      else ("skse64_", "skse64_loader.exe"))
+    wanted = "{}{}_{}_{}.dll".format(prefix, *tuple(runtime)[:3])
+    try:
+        files = {f.lower(): f for f in os.listdir(game_dir)}
+    except OSError:
+        return None
+    others = sorted(f for f in files
+                    if f != wanted and f.startswith(prefix)
+                    and SKSE_RUNTIME_DLL.match(f))
+    version = ()
+    if wanted in files:
+        try:
+            with open(os.path.join(game_dir, files[wanted]), "rb") as fh:
+                data = fh.read()
+            directory, offset = _sections(data)
+            raw = _file_version(data, directory, offset)
+            version = tuple(raw[1:4]) if raw and raw[0] == 0 else tuple(raw[:3])
+        except (OSError, ValueError, struct.error):
+            version = ()
+    return SkseInstall(wanted, loader in files, wanted in files, version,
+                       others)
+
+
+# -- reading each DLL once ---------------------------------------------------------
+#
+# A full read of a real list's SKSE plugins is 118 files and 338 MB, about
+# two and a half seconds - too long to add to every game launch. Results are
+# kept by path, size and modification time, and saved between sessions, so
+# only a new or changed DLL is read again.
+
+_cache: dict = {}
+_dirty = False
+
+
+def read_dll_cached(path: str) -> DllInfo | None:
+    global _dirty
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = os.path.normcase(os.path.abspath(path))
+    stamp = [st.st_size, st.st_mtime_ns]
+    hit = _cache.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    info = read_dll(path)
+    _cache[key] = (stamp, info)
+    _dirty = True
+    return info
+
+
+def load_cache(path: str) -> None:
+    """Merge a saved cache in. A missing or unreadable file is no cache."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            saved = json.load(fh)
+    except (OSError, ValueError):
+        return
+    fields = {f.name for f in dataclasses.fields(DllInfo)}
+    for key, (stamp, raw) in (saved.get("dlls") or {}).items():
+        if key in _cache:
+            continue
+        try:
+            info = None if raw is None else DllInfo(**{
+                k: (tuple(v) if isinstance(v, list) else v)
+                for k, v in raw.items() if k in fields})
+        except TypeError:
+            continue
+        _cache[key] = (list(stamp), info)
+
+
+def save_cache(path: str) -> None:
+    global _dirty
+    if not _dirty:
+        return
+    out = {key: (stamp, None if info is None else dataclasses.asdict(info))
+           for key, (stamp, info) in _cache.items()}
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"version": 1, "dlls": out}, fh)
+        os.replace(tmp, path)
+        _dirty = False
+    except OSError:
+        pass                            # a cache that cannot be saved is fine
 
 
 def game_runtime(game_dir: str | None) -> tuple:
@@ -277,7 +412,7 @@ def populate(nodes, mods_dir: str) -> None:
         for rel in node.file_manifest:
             if (rel.startswith(DLL_DIR) and rel.endswith(".dll")
                     and rel.count("/") == 2):
-                info = read_dll(os.path.join(mods_dir, node.name, rel))
+                info = read_dll_cached(os.path.join(mods_dir, node.name, rel))
                 if info is not None:
                     node.skse_dlls[rel] = info
 

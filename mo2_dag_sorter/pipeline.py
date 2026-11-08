@@ -132,7 +132,10 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     loaded = loadcheck.loaded_plugins(nodes, active, data_dir,
                                       os.path.join(mo2_root, "overwrite"))
     archives.populate(nodes, mods_dir, loaded, listed)
+    dll_cache = os.path.join(cache_dir, "skse_dll_cache.json")
+    skse.load_cache(dll_cache)
     skse.populate(nodes, mods_dir)
+    skse.save_cache(dll_cache)
     slots.populate(nodes, mods_dir)
 
     cache = nexus.NexusCache(os.path.join(cache_dir, "nexus_cache.json"))
