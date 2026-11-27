@@ -18,9 +18,16 @@ from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDialog,
                              QDialogButtonBox, QHeaderView, QLabel,
                              QTableWidget, QTableWidgetItem, QVBoxLayout)
 
+from ._i18n import translate
 from .tiers import CATEGORY_NAME_TIERS
 
-KEEP = "- leave it where the guess put it -"
+# Category names stay in English: they are what the tier table matches on,
+# and the chosen one is stored by its text in user_rules.json. Only the
+# "keep the guess" entry is translated, and it is recognised by position.
+
+
+def keep() -> str:
+    return translate("CategoryDialog", "- leave it where the guess put it -")
 
 
 def choices() -> list[str]:
@@ -36,22 +43,31 @@ class CategoryDialog(QDialog):
         self._unknown = list(unknown)
         self._decisions = decisions
         self._boxes: list[QComboBox] = []
-        self.setWindowTitle("Mods with no category")
+        self.setWindowTitle(translate("CategoryDialog",
+                                      "Mods with no category"))
         self.resize(1050, 560)
 
         layout = QVBoxLayout(self)
         off_nexus = sum(1 for u in self._unknown if u.off_nexus)
-        layout.addWidget(QLabel(
-            "{} mod(s) have no category from Nexus or MO2, so the sorter "
-            "placed them by looking at what files they ship. {} of those "
-            "were not installed from Nexus at all.\n\nTelling it what they "
-            "are will place them properly. Anything left alone keeps the "
-            "guess, and you will be asked again next time.".format(
-                len(self._unknown), off_nexus), self))
+        layout.addWidget(QLabel("{} {}\n\n{}".format(
+            translate("CategoryDialog",
+                      "%n mod(s) have no category from Nexus or MO2, so the "
+                      "sorter placed them by looking at what files they "
+                      "ship.", None, len(self._unknown)),
+            translate("CategoryDialog",
+                      "%n of those were not installed from Nexus at all.",
+                      None, off_nexus),
+            translate("CategoryDialog",
+                      "Telling it what they are will place them properly. "
+                      "Anything left alone keeps the guess, and you will be "
+                      "asked again next time.")), self))
 
         table = QTableWidget(len(self._unknown), 4, self)
         table.setHorizontalHeaderLabels(
-            ["Mod", "Why it is unknown", "Placed by", "Select a Category"])
+            [translate("CategoryDialog", "Mod"),
+             translate("CategoryDialog", "Why it is unknown"),
+             translate("CategoryDialog", "Placed by"),
+             translate("CategoryDialog", "Select a Category")])
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         table.verticalHeader().setVisible(False)
@@ -60,7 +76,7 @@ class CategoryDialog(QDialog):
             table.setItem(row, 1, QTableWidgetItem(item.why))
             table.setItem(row, 2, QTableWidgetItem(item.guess))
             box = QComboBox(self)
-            box.addItem(KEEP)
+            box.addItem(keep())
             box.addItems(choices())
             already = decisions.category_for(item.name)
             if already:
@@ -77,7 +93,7 @@ class CategoryDialog(QDialog):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         # Wide enough for the longest category name plus the drop-down
         # arrow: the point of the column is reading the names in it.
-        widest = max(choices() + [KEEP], key=len)
+        widest = max(choices() + [keep()], key=len)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         table.setColumnWidth(
             3, table.fontMetrics().horizontalAdvance(widest) + 60)
@@ -87,17 +103,16 @@ class CategoryDialog(QDialog):
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel, self)
         buttons.button(QDialogButtonBox.StandardButton.Save).setText(
-            "Save and re-sort")
+            translate("CategoryDialog", "Save and re-sort"))
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
-            "Skip - keep the guesses")
+            translate("CategoryDialog", "Skip - keep the guesses"))
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
     def _save(self) -> None:
         for item, box in zip(self._unknown, self._boxes):
-            chosen = box.currentText()
-            if chosen != KEEP:
-                self._decisions.set_category(item.name, chosen)
+            if box.currentIndex() > 0:          # 0 is "keep the guess"
+                self._decisions.set_category(item.name, box.currentText())
         self._decisions.save()
         self.accept()

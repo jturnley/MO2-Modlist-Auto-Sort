@@ -104,6 +104,7 @@ mo2_dag_sorter/       the plugin - copy this folder into MO2/plugins/
   slots.py            which copy of a plugin wins, and full-slot counts
   winners.py          which mod provides each plugin/archive/DLL/script, before and after
   launchcheck.py      will SKSE load what is installed - before launch, and on install
+  install_action.py   what happens to a newly installed mod (rules; install_ui.py asks)
   modlist.py          reading and writing modlist.txt
   nexus.py            v1 metadata + cache    requirements.py  v2 GraphQL
   decisions.py        user_rules.json        backups.py       undo
@@ -209,6 +210,49 @@ no credential, so they resolve for everyone. A key is what lets the tiering
 look up a game's category table on v1 when MO2's own connection is
 unavailable.
 
+## When a mod is installed
+
+MO2 installs every new mod disabled, at the bottom of the left pane. When
+an install finishes, the sorter asks what should happen to it:
+
+- **Enable and sort** - switch it on and slot it into the existing order,
+  asking only about the conflicts that involve it. The rest of the list
+  keeps its order.
+- **Enable only** - switch it on and leave it where MO2 put it.
+- **Do nothing** - leave it off.
+
+Tick **Do this automatically from now on** and it stops asking. To change
+the answer later, use **Tools → New Mod Options**, which also offers "Ask me
+each time" again. (The same value is the `on_install` setting under
+Settings → Plugins: `ask`, `nothing`, `enable` or `enable_sort`.)
+
+Reinstalling or updating a mod that is already enabled asks only whether
+to place it again, and never remembers that answer for new installs.
+
+## Speed
+
+A full sort reads every mod folder, which on a list of 1,400 mods is most
+of what a sort costs. Since 0.11:
+
+- Folders are listed with `os.scandir` directly and several at a time,
+  rather than through `os.walk`, which asked Windows about every directory
+  a second time. Same files, same order.
+- Placing a newly installed mod, the right-click sort and freezing reuse
+  each mod's file list from the last sort, re-reading only folders that
+  changed. A folder counts as changed when its own or its meta.ini's
+  modification time moves (a reinstall, merge or replace), when MO2
+  reports it installed or removed, and after any program MO2 runs
+  (BodySlide, Nemesis and DynDOLOD write into mod folders).
+- **Tools → Auto-Sort Left Pane always reads every folder afresh.** The one
+  thing reuse can miss is a file added deep inside a mod folder by hand in
+  Explorer while MO2 is open; a full sort, a program run or a restart picks
+  it up.
+
+Measured on a 1,398-mod list, warm disk cache, outside MO2: a full sort
+went from 6.5 s to 2.4 s, and the sort behind placing one mod from 6.5 s to
+0.9 s, with identical results. MO2's own refresh of the left pane after a
+change comes on top of that and is not the sorter's to speed up.
+
 ## SKSE plugin check
 
 Before SKSE or the game is launched from MO2, and right after a mod is installed, the sorter checks that SKSE will load what is installed, and warns if it will not:
@@ -254,6 +298,35 @@ the Tools menu, so a lost hook costs convenience and nothing else.
 
 Copy `mo2_dag_sorter/` into `MO2/plugins/` and restart MO2.
 
+## Translations
+
+Everything the plugin shows goes through Qt's translation system - menus,
+dialogs, the sort report, and the explanations of why a mod has to load
+where it does - so a language needs no code changes, only a `.ts` file.
+
+The plugin reads MO2's own language setting and loads
+`mo2_dag_sorter/translations/mo2_dag_sorter_<language>.qm` from its own
+folder, so a translated release is still one folder to copy. A `.qm` of the
+same name in MO2's `translations/` folder works too.
+
+To add a language:
+
+```bash
+pylupdate6 mo2_dag_sorter -ts mo2_dag_sorter/translations/mo2_dag_sorter_ru.ts
+```
+
+Translate the `.ts` in Qt Linguist and send it as a pull request; releases
+build the `.qm` from it. Please say in the pull request that the
+translation may be included in the plugin.
+
+A few things stay in English on purpose. Category names are Nexus's own,
+the sorter matches on them, and it stores the one you pick, so they are
+shown as they are. Notes saved into `user_rules.json` stay English so the
+file reads the same whatever language wrote it. The placeholders an ignored
+SKSE warning is stored under ("the game folder", "not installed") are kept
+English in the stored data, because a translated one would bring an ignored
+warning back the day the language changed; they are translated on screen.
+
 ## Tests
 
 ```bash
@@ -263,3 +336,22 @@ python tests/test_dag_sorter.py
 No MO2, no Qt, no network. The Qt dialogs are not covered — PyQt6 is not
 importable outside MO2's embedded Python, so they are syntax-checked only and
 need a live run to verify.
+
+## Copyright and permissions
+
+Copyright © 2026 jturnley (Illrigger on Nexus Mods). All rights reserved.
+
+No license is granted. The source is published so it can be read and
+audited.
+
+- **You may** read it and run it.
+- **You may not** redistribute this plugin, or any modified version of it,
+  anywhere - including translated, repackaged or "fixed" builds - without
+  written permission.
+
+This plugin rewrites your mod list and uses your Nexus API key. Every copy users run has to be one
+that has been reviewed, and that is only true of the official releases on
+GitHub and Nexus Mods.
+
+Translations and fixes are welcome as pull requests and ship in the
+official releases with credit. Anyone is welcome to link to those releases.

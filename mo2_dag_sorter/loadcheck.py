@@ -27,7 +27,10 @@ from __future__ import annotations
 import configparser
 import io
 import os
+import re
 from dataclasses import dataclass
+
+from ._i18n import QT_TRANSLATE_NOOP, translate
 
 PLUGIN_EXTS = (".esp", ".esm", ".esl")
 TEXTURES_SUFFIX = " - textures"
@@ -43,7 +46,33 @@ class Problem:
 
     @property
     def headline(self) -> str:
-        return "{} ({}): {}".format(self.item, self.mod, self.detail)
+        return translate("LoadCheck", "{} ({}): {}").format(
+            shown(self.item), shown(self.mod), self.detail)
+
+
+# Placeholders that stand in a Problem's mod or item. They stay in English
+# in the Problem itself, because "do not warn me again" stores them
+# (launchcheck.fingerprint): a translated one would bring an ignored
+# warning back the day the user changed language. Translated for display.
+PLACES = {
+    "the game folder": QT_TRANSLATE_NOOP("LoadCheck", "the game folder"),
+    "not installed": QT_TRANSLATE_NOOP("LoadCheck", "not installed"),
+    "header version 1.71": QT_TRANSLATE_NOOP("LoadCheck",
+                                             "header version 1.71"),
+    ".esl plugins": QT_TRANSLATE_NOOP("LoadCheck", ".esl plugins"),
+}
+_COUNTED = re.compile(r"^(\d+) plugins$")
+
+
+def shown(name: str) -> str:
+    """A mod name as it should be displayed: placeholders translated."""
+    if name in PLACES:
+        return translate("LoadCheck", PLACES[name])
+    counted = _COUNTED.match(name or "")
+    if counted:
+        return translate("LoadCheck", "%n plugins", None,
+                         int(counted.group(1)))
+    return name
 
 
 # -- where things are --------------------------------------------------------
@@ -244,8 +273,9 @@ def find(nodes, mods_dir: str, loaded: set, listed: set,
             if not archive_loads(rel, loaded, listed):
                 out.append(Problem(
                     node.name, rel, "orphan_archive",
-                    "nothing loads this archive - no active plugin named "
-                    "{}".format(" / ".join(archive_loaders(rel)))))
+                    translate("LoadCheck", "nothing loads this archive - "
+                              "no active plugin named {}").format(
+                        " / ".join(archive_loaders(rel)))))
     out.extend(_runtime_problems(live, runtime))
     out.extend(_address_library_problems(live, runtime, data_dir,
                                          overwrite_dir, mods_dir))
@@ -274,11 +304,12 @@ def extended_header_problem(plugins, runtime, bees: bool) -> list[Problem]:
         return []
     return [Problem(
         "{} plugins".format(len(newer)), "header version 1.71", "header_171",
-        "saved by the Creation Kit for game version 1.6.1130 or later. "
-        "Version {} reads them only with 'Backported Extended ESL Support' "
-        "(an SKSE plugin), which is not installed, so they may not load "
-        "correctly: {}".format(".".join(str(v) for v in runtime[:3]),
-                               _named(newer)))]
+        translate("LoadCheck",
+                  "saved by the Creation Kit for game version 1.6.1130 or "
+                  "later. Version {} reads them only with 'Backported "
+                  "Extended ESL Support' (an SKSE plugin), which is not "
+                  "installed, so they may not load correctly: {}").format(
+            ".".join(str(v) for v in runtime[:3]), _named(newer)))]
 
 
 def _bees_installed(live, data_dir, overwrite_dir, runtime=()) -> bool:
@@ -325,7 +356,8 @@ def _named(items) -> str:
     items = list(items)
     shown = ", ".join(items[:LISTED])
     if len(items) > LISTED:
-        shown += " and {} more".format(len(items) - LISTED)
+        shown += translate("LoadCheck", " and %n more", None,
+                           len(items) - LISTED)
     return shown
 
 
@@ -355,10 +387,12 @@ def _address_library_problems(live, runtime, data_dir, overwrite_dir,
     version = ".".join(str(v) for v in runtime[:3])
     return [Problem(
         "not installed", os.path.basename(need), "address_library",
-        "{} SKSE plugin(s) need Address Library for game version {} and it "
-        "is not installed, so none of them will load ({}). Install "
-        "'Address Library for SKSE Plugins' for this version.".format(
-            len(users), version, _named(users)))]
+        translate("LoadCheck",
+                  "%n SKSE plugin(s) need Address Library for game version "
+                  "{} and it is not installed, so none of them will load "
+                  "({}). Install 'Address Library for SKSE Plugins' for this "
+                  "version.", None, len(users)).format(version,
+                                                       _named(users)))]
 
 
 def _vr_esl_problems(live, runtime, active, data_dir, overwrite_dir,
@@ -372,9 +406,11 @@ def _vr_esl_problems(live, runtime, active, data_dir, overwrite_dir,
         return []
     return [Problem(
         "{} plugins".format(len(esls)), ".esl plugins", "vr_esl",
-        "Skyrim VR loads no .esl plugin without 'Skyrim VR ESL Support', "
-        "which is not installed ({}). ESL-flagged .esp plugins load, but "
-        "each takes a full slot.".format(_named(esls)))]
+        translate("LoadCheck",
+                  "Skyrim VR loads no .esl plugin without 'Skyrim VR ESL "
+                  "Support', which is not installed ({}). ESL-flagged .esp "
+                  "plugins load, but each takes a full slot.").format(
+            _named(esls)))]
 
 
 def _masters_of(node, plugin, mods_dir):
@@ -385,19 +421,21 @@ def _masters_of(node, plugin, mods_dir):
 def _why_missing(master, owner, mods_dir, nodes) -> str:
     holder = owner.get(master)
     if holder is not None and not holder.enabled:
-        return "needs {}, which is in {} - and that mod is switched " \
-               "off".format(master, holder.name)
+        return translate("LoadCheck", "needs {}, which is in {} - and that "
+                         "mod is switched off").format(master, holder.name)
     if holder is not None:
-        return "needs {}, which is installed in {} but unticked in the " \
-               "plugin list".format(master, holder.name)
+        return translate("LoadCheck", "needs {}, which is installed in {} "
+                         "but unticked in the plugin list").format(
+            master, holder.name)
     for node in nodes:
         if node.is_separator or node.is_unmanaged:
             continue
         if os.path.isfile(os.path.join(mods_dir, node.name, "optional",
                                        master)):
-            return "needs {}, which is in {}'s Optional ESPs".format(
-                master, node.name)
-    return "needs {}, which is not installed".format(master)
+            return translate("LoadCheck", "needs {}, which is in {}'s "
+                             "Optional ESPs").format(master, node.name)
+    return translate("LoadCheck", "needs {}, which is not installed"
+                     ).format(master)
 
 
 def _runtime_problems(live, runtime) -> list[Problem]:
@@ -421,6 +459,6 @@ def _runtime_problems(live, runtime) -> list[Problem]:
             node = copies[rel][-1][0]
             out.append(Problem(
                 node.name, os.path.basename(rel), "skse_runtime",
-                "built for a different game version - SKSE will not load "
-                "it on {}".format(version)))
+                translate("LoadCheck", "built for a different game version "
+                          "- SKSE will not load it on {}").format(version)))
     return out

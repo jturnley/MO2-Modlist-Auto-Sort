@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from ._i18n import translate
 from . import (archives, dag, decisions as decisions_mod, duplicates,
                loadcheck, masters, modlist, nexus, nexus_api,
                requirements, scan, shadow, skse, slots, tiers,
@@ -79,7 +80,8 @@ def sort_profile(mo2_root: str, profile: str = "Default",
                  cache_dir: str | None = None,
                  progress=None, resolver=None,
                  decisions=None, client=None,
-                 refresh=(), game_dir=None) -> SortResult:
+                 refresh=(), game_dir=None, reuse_scan: bool = False,
+                 enabled=()) -> SortResult:
     """Run the whole sequence over one profile.
 
     ``resolver`` is an optional object with ``.resolve(ids)`` - inside MO2
@@ -105,6 +107,15 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     is read from ModOrganizer.ini. It supplies the game version an SKSE
     plugin has to match and the plugins that load from outside MO2.
 
+    ``reuse_scan`` keeps each mod's file list from the last sort when its
+    folder has not changed (see :class:`scan.SessionCache`), instead of
+    walking every mod folder again. Placing one mod, freezing and the
+    right-click sort use it; the full sort does not.
+
+    ``enabled`` names mods to treat as enabled whatever modlist.txt says:
+    a mod the plugin has just switched on, when MO2 has not yet written
+    the change to disk.
+
     This clears the two caches kept here.  The Extender keeps its own,
     shared with other plugins, which sits behind these - so a caller
     wanting genuinely fresh data should also wrap the call in
@@ -117,7 +128,12 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     cache_dir = cache_dir or os.path.join(mo2_root, "plugins", "data")
 
     nodes, header = modlist.read_modlist(list_path)               # [2]
-    scan.populate(nodes, mods_dir, progress=progress)             # [3] [5]
+    switched_on = {str(n) for n in (enabled or ())}
+    for node in nodes:
+        if node.name in switched_on and node.prefix == "-":
+            node.prefix = "+"
+    scan.populate(nodes, mods_dir, cache=scan.SESSION,            # [3] [5]
+                  progress=progress, fresh=not reuse_scan)
     masters.populate(nodes, mods_dir)
 
     # What the game will really load. An archive is opened only when a
@@ -154,7 +170,8 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     if not category_names:
         category_names = nexus.read_local_categories(mo2_root)
         if category_names:
-            nexus_report += " (category names from nexuscatmap.dat)"
+            nexus_report += translate(
+                "Pipeline", " (category names from nexuscatmap.dat)")
     tiers.apply(nodes, categories, category_names,
                 nexus.read_mo2_categories(mo2_root),
                 getattr(decisions, "categories", None) if decisions else None)
@@ -172,7 +189,8 @@ def sort_profile(mo2_root: str, profile: str = "Default",
         needs, req_report = requirements.fetch(ids, req_cache, game,
                                               progress, client=client)
     else:
-        needs, req_report = req_cache.needs, "requirements offline ({} cached)".format(
+        needs, req_report = req_cache.needs, translate(
+            "Pipeline", "requirements offline (%n cached)", None,
             len(req_cache.needs))
     nexus_report = "{}; {}".format(nexus_report, req_report)
     # Whatever was fetched is worth keeping for the next run, and for
@@ -210,13 +228,20 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     was = {n.name: n.original_index for n in nodes}
     moved = [(n.name, was[n.name], i) for i, n in enumerate(final)
              if was[n.name] != i]
-    report = "{}; {} edges ({} conflicts settled); {} of {} mods move".format(
-        nexus_report, len(edges), len(dropped), len(moved), len(movable))
+    # A list of clauses joined by "; ", each translated on its own: one
+    # sentence cannot carry three plural forms.
+    report = "{}; {} {}; {}".format(
+        nexus_report,
+        translate("Pipeline", "%n edges", None, len(edges)),
+        translate("Pipeline", "(%n conflicts settled)", None, len(dropped)),
+        translate("Pipeline", "%n of {} mods move", None,
+                  len(moved)).format(len(movable)))
     if renamed:
         # Said out loud because it is a guess, however careful: a rule the
         # user set by hand has been moved onto a mod they did not name.
-        report += "; {} rule(s) followed a renamed mod ({})".format(
-            len(renamed),
+        report += "; " + translate(
+            "Pipeline", "%n rule(s) followed a renamed mod ({})", None,
+            len(renamed)).format(
             ", ".join("{} -> {}".format(a, b) for a, b in renamed[:3])
             + (", ..." if len(renamed) > 3 else ""))
     overwrite_dir = os.path.join(mo2_root, "overwrite")
@@ -225,7 +250,8 @@ def sort_profile(mo2_root: str, profile: str = "Default",
     problems = loadcheck.find(final, mods_dir, loaded, listed, runtime,
                               active, data_dir, overwrite_dir)
     if problems:
-        report += "; {} thing(s) will not load".format(len(problems))
+        report += "; " + translate("Pipeline", "%n thing(s) will not load",
+                                   None, len(problems))
     # The left pane picks which copy of a plugin the game reads, and that
     # copy decides whether it takes a full slot. Counted before and after
     # so a sort can never push a list over the limit unannounced.

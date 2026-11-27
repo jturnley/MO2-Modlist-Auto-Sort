@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QEventLoop, QObject, QTimer
 
+from ._i18n import translate
+
 # How many requests to keep in flight. MO2 queues and throttles internally, so
 # this is not about the rate limit - it is so that cancelling is responsive
 # and a stalled request cannot strand the whole run.
@@ -97,7 +99,9 @@ class BridgeResolver(QObject):
         already = len(wanted) - len(self._todo)
         if not self._todo:
             return dict(self.cache.categories), (
-                "Nexus: {} from cache, nothing to fetch".format(already))
+                translate("NexusBridge",
+                          "Nexus: {} from cache, nothing to fetch"
+                          ).format(already))
 
         self._progress = progress
         if progress is not None:
@@ -113,10 +117,13 @@ class BridgeResolver(QObject):
         self._loop = None
         self.cache.save()
 
-        report = "Nexus (via MO2's own key): {} cached, {} fetched, {} " \
-                 "unresolved".format(already, self.fetched, self.failed)
+        report = translate(
+            "NexusBridge", "Nexus (via MO2's own key): {} cached, {} "
+            "fetched, {} unresolved").format(already, self.fetched,
+                                             self.failed)
         if self.cancelled:
-            report += " - cancelled"
+            report += translate("NexusBridge", " - cancelled")
         elif self._pending:
-            report += " - {} never answered".format(len(self._pending))
+            report += translate("NexusBridge", " - %n never answered", None,
+                                len(self._pending))
         return dict(self.cache.categories), report

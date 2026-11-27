@@ -18,6 +18,8 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from ._i18n import translate
+
 PLUGIN_EXTS = (".esp", ".esm", ".esl")
 
 
@@ -38,6 +40,17 @@ def kind_of(path: str) -> str | None:
 
 
 KINDS = ("plugins", "archives", "SKSE plugins", "scripts")
+
+
+def _counted(kind: str, n: int) -> str:
+    """"3 plugins", with the plural form the language needs."""
+    if kind == "plugins":
+        return translate("Winners", "%n plugins", None, n)
+    if kind == "archives":
+        return translate("Winners", "%n archives", None, n)
+    if kind == "SKSE plugins":
+        return translate("Winners", "%n SKSE plugins", None, n)
+    return translate("Winners", "%n scripts", None, n)
 
 
 def _contested(nodes) -> dict:
@@ -81,11 +94,12 @@ class WinnerDiff:
 
     @property
     def headline(self) -> str:
-        parts = ["{} {}".format(len(self.of(k)), k) for k in KINDS
-                 if self.of(k)]
+        parts = [_counted(k, len(self.of(k))) for k in KINDS if self.of(k)]
         if not parts:
-            return "no plugin, archive, SKSE plugin or script changes hands"
-        return "{} change which mod provides them".format(", ".join(parts))
+            return translate("Winners", "no plugin, archive, SKSE plugin or "
+                             "script changes hands")
+        return translate("Winners", "{} change which mod provides them"
+                         ).format(", ".join(parts))
 
 
 def diff(before, after) -> WinnerDiff:

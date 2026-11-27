@@ -22,6 +22,7 @@ import urllib.error
 import urllib.request
 
 from . import tls
+from ._i18n import translate
 
 API_ROOT = "https://api.nexusmods.com/v1/games"
 USER_AGENT = "MO2-DAG-Sorter/1.0"
@@ -213,8 +214,8 @@ def resolve(mod_ids, cache: NexusCache, api_key: str | None,
         client = None
     if not api_key and client is None:
         return dict(cache.categories), dict(cache.category_names), (
-            "no Nexus API key set - tiers from cache ({} mods) and file trees"
-            .format(len(cache.categories)))
+            translate("Nexus", "no Nexus API key set - tiers from cache (%n "
+                      "mods) and file trees", None, len(cache.categories)))
 
     if not cache.category_names:
         try:
@@ -231,31 +232,35 @@ def resolve(mod_ids, cache: NexusCache, api_key: str | None,
             cache.put(mod_id, *_fetch(domain, mod_id, api_key, client))
             fetched += 1
         except RateLimitLow as exc:
-            stopped = "only {} requests remain this hour".format(exc.args[0])
+            stopped = translate("Nexus", "only %n requests remain this hour",
+                                None, int(exc.args[0]))
             break
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):
-                stopped = "the API key was rejected"
+                stopped = translate("Nexus", "the API key was rejected")
                 break
             if exc.code == 429:
-                stopped = "the API rate limit was reached"
+                stopped = translate("Nexus",
+                                    "the API rate limit was reached")
                 break
             cache.put(mod_id, None)          # 404: the page is gone
             failed += 1
         except (urllib.error.URLError, OSError, ValueError, TimeoutError):
             failed += 1
-            stopped = "the network is unreachable"
+            stopped = translate("Nexus", "the network is unreachable")
             break
         if progress is not None and not progress(n, len(todo), str(mod_id)):
-            stopped = "cancelled"
+            stopped = translate("Nexus", "cancelled")
             break
         time.sleep(PAUSE)
 
     cache.save()
-    report = "Nexus: {} cached, {} fetched, {} unresolved".format(
+    report = translate("Nexus", "Nexus: {} cached, {} fetched, {} "
+                       "unresolved").format(
         len(cache.categories) - fetched, fetched, failed)
     if stopped:
-        report += " - stopped early because {}".format(stopped)
+        report += translate("Nexus", " - stopped early because {}").format(
+            stopped)
     return dict(cache.categories), dict(cache.category_names), report
 
 

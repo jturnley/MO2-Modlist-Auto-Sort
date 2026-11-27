@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ._i18n import translate
+
 
 @dataclass
 class Unknown:
@@ -41,12 +43,15 @@ class Unknown:
     @property
     def why(self) -> str:
         if self.off_nexus:
-            return "not from Nexus, so there is no category to look up"
-        return "Nexus category {} did not resolve".format(self.nexus_id)
+            return translate("Uncategorised", "not from Nexus, so there is "
+                             "no category to look up")
+        return translate("Uncategorised", "Nexus category {} did not "
+                         "resolve").format(self.nexus_id)
 
     @property
     def headline(self) -> str:
-        return "{} - {}; placed by guess: {}".format(
+        return translate("Uncategorised", "{} - {}; placed by guess: {}"
+                         ).format(
             self.name, self.why, self.guess)
 
 

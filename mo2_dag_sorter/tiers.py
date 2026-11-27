@@ -21,6 +21,7 @@ for every mod installed from outside Nexus.
 from __future__ import annotations
 
 from . import scan
+from ._i18n import translate
 
 import os
 
@@ -143,27 +144,28 @@ def _heuristic_tier(node) -> tuple[int, str]:
     packed = list(getattr(node, "archive_manifest", None) or ())
     files = list(node.file_manifest) + packed
     if not files:
-        return DEFAULT_TIER, "no files scanned"
+        return DEFAULT_TIER, translate("Tiers", "no files scanned")
     tier, why = _read_tree(files)
     if packed and _read_tree(node.file_manifest) != (tier, why):
-        why += " (read from inside its .bsa)"
+        why += translate("Tiers", " (read from inside its .bsa)")
     return tier, why
 
 
 def _read_tree(files) -> tuple[int, str]:
     if not files:
-        return DEFAULT_TIER, "no files scanned"
+        return DEFAULT_TIER, translate("Tiers", "no files scanned")
     exts = {os.path.splitext(f)[1] for f in files}
     dirs = {f.split("/", 1)[0] for f in files if "/" in f}
 
     if ".dll" in exts:
-        return 0, "ships a DLL, so it is a script extender plugin"
+        return 0, translate("Tiers",
+                            "ships a DLL, so it is a script extender plugin")
     if ".hkx" in exts and any("skeleton" in f for f in files):
-        return 2, "ships a skeleton"
+        return 2, translate("Tiers", "ships a skeleton")
     if dirs & {"interface", "fonts"} or exts & {".swf", ".fontconfig"}:
-        return 1, "writes to interface/ or fonts/"
+        return 1, translate("Tiers", "writes to interface/ or fonts/")
     if ".hkx" in exts:
-        return 2, "ships animations"
+        return 2, translate("Tiers", "ships animations")
     plugin_count = sum(1 for f in files if f.endswith(PLUGIN_EXTS_LOWER))
     archived = any(f.endswith(".bsa") for f in files)
     if plugin_count and len(files) <= 4 and not archived:
@@ -171,10 +173,11 @@ def _read_tree(files) -> tuple[int, str]:
         # always a patch: it has nothing to contribute but record edits.
         # An archive beside it is assets of its own, whether or not the
         # archive could be read.
-        return 5, "a plugin and nothing else, so it is a patch"
+        return 5, translate("Tiers",
+                            "a plugin and nothing else, so it is a patch")
     if ".dds" in exts or ".nif" in exts:
-        return 3, "ships meshes or textures"
-    return DEFAULT_TIER, "nothing decisive in the file tree"
+        return 3, translate("Tiers", "ships meshes or textures")
+    return DEFAULT_TIER, translate("Tiers", "nothing decisive in the file tree")
 
 
 PLUGIN_EXTS_LOWER = (".esp", ".esm", ".esl")
@@ -189,10 +192,12 @@ def assign(node, category_id: int | None,
     for tier, needles in NAME_TIERS:
         for needle in needles:
             if needle in lname:
-                return tier, "name contains '{}'".format(needle)
+                return tier, translate("Tiers", "name contains '{}'"
+                                       ).format(needle)
     tier = tier_for_category(category_id, category_names)
     if tier is not None:
-        return tier, "Nexus category '{}'".format(category_names[category_id])
+        return tier, translate("Tiers", "Nexus category '{}'").format(
+            category_names[category_id])
     # A mod installed from a local archive has no Nexus id, but MO2 still
     # files it under a category - that is what the left pane's Category
     # column shows - and a category the user can see is better evidence than
@@ -203,7 +208,7 @@ def assign(node, category_id: int | None,
         name = (mo2_category_names or {}).get(cat)
         if name and name.lower() in CATEGORY_NAME_TIERS:
             return (CATEGORY_NAME_TIERS[name.lower()],
-                    "MO2 category '{}'".format(name))
+                    translate("Tiers", "MO2 category '{}'").format(name))
     return _heuristic_tier(node)
 
 
@@ -237,16 +242,19 @@ def apply(nodes, categories: dict[int, int],
             settled = CATEGORY_NAME_TIERS.get(chosen.lower())
             if settled is not None:
                 node.tier = settled
-                node.tier_reason = "category you gave it: '{}'".format(chosen)
+                node.tier_reason = translate(
+                    "Tiers", "category you gave it: '{}'").format(chosen)
             name = chosen
         node.category_name = name or ""
         node.is_tool = scan.looks_like_tool(
             node.category_name, node.file_manifest, node.name)
         node.subtier = surface_rank(node.name, node.category_name)
         if node.subtier:
-            node.tier_reason += " ({})".format(
-                "PBR, so below the rest" if node.subtier == 3
-                else "parallax/complex, so below plain textures")
+            node.tier_reason += (
+                translate("Tiers", " (PBR, so below the rest)")
+                if node.subtier == 3 else
+                translate("Tiers",
+                          " (parallax/complex, so below plain textures)"))
 
 
 # Within Models and Textures, what a mod is decides which way round a pair

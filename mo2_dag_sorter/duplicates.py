@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ._i18n import translate
+
 
 @dataclass
 class Duplicate:
@@ -32,9 +34,12 @@ class Duplicate:
 
     @property
     def headline(self) -> str:
-        return "{} - {} identical file{}".format(
-            " and ".join(self.names), self.files,
-            "" if self.files == 1 else "s")
+        names = translate("Duplicates", " and ").join(self.names)
+        if self.files == 1:
+            return translate("Duplicates", "{} - %n identical file", None,
+                             1).format(names)
+        return translate("Duplicates", "{} - %n identical files", None,
+                         self.files).format(names)
 
 
 def find(nodes, output_tier: int = 6) -> list[Duplicate]:

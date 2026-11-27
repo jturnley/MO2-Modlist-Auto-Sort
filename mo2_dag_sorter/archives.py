@@ -37,8 +37,30 @@ HAS_FILE_NAMES = 0x2
 MAX_TABLES = 32 << 20
 
 
+_NAMES: dict = {}
+
+
 def read_bsa_names(path: str) -> list[str]:
-    """Lowercased ``folder/file`` paths in one archive, or [] if unreadable."""
+    """Lowercased ``folder/file`` paths in one archive, or [] if unreadable.
+
+    Kept between sorts, keyed on the archive's size and modification time:
+    reading two hundred name tables is half a second, and an archive that
+    has not changed has the same names in it.
+    """
+    try:
+        info = os.stat(path)
+    except OSError:
+        return []
+    stamp = (info.st_mtime_ns, info.st_size)
+    held = _NAMES.get(path)
+    if held is not None and held[0] == stamp:
+        return list(held[1])
+    names = _read_bsa_names(path)
+    _NAMES[path] = (stamp, names)
+    return list(names)
+
+
+def _read_bsa_names(path: str) -> list[str]:
     try:
         with open(path, "rb") as fh:
             head = fh.read(36)

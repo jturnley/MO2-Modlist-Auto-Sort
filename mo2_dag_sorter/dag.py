@@ -32,9 +32,10 @@ from __future__ import annotations
 import heapq
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import tiers
+from ._i18n import QT_TRANSLATE_NOOP, translate
 
 
 @dataclass(frozen=True)
@@ -43,13 +44,17 @@ class DependencyEdge:
     child: str         # loads later / higher priority, so it wins
     reason: str        # "file_conflict" | "master_requirement" | "tier_constraint"
     detail: str = ""
+    # How many files a file_conflict shares. Ranked on this, never on the
+    # detail text, which is translated.
+    shared: int = field(default=0, compare=False)
 
 
 class CycleError(Exception):
     """Raised with the mods left unplaced when the graph is not acyclic."""
 
     def __init__(self, nodes: list[str], edges: list[DependencyEdge]) -> None:
-        super().__init__("circular dependency among {} mods".format(len(nodes)))
+        super().__init__(translate("Dag", "circular dependency among %n mods",
+                                   None, len(nodes)))
         self.nodes = nodes
         self.edges = edges
 
@@ -186,11 +191,11 @@ def conflict_edges(nodes, skip=frozenset(), vr=False) -> list[DependencyEdge]:
         if pair in skip:
             continue
         a, b = seen[pair]
-        detail = "{} shared file(s)".format(count)
+        detail = translate("Dag", "%n shared file(s)", None, count)
         ported = _vr_first(a, b) if vr else None
         if ported is not None:
             lo, hi = ported
-            detail += "; on Skyrim VR the VR version wins"
+            detail += translate("Dag", "; on Skyrim VR the VR version wins")
         elif a.tier != b.tier:
             lo, hi = (a, b) if a.tier < b.tier else (b, a)
         elif a.subtier != b.subtier:
@@ -214,7 +219,7 @@ def conflict_edges(nodes, skip=frozenset(), vr=False) -> list[DependencyEdge]:
                 lo, hi = ((a, b) if a.original_index < b.original_index
                           else (b, a))
         out.append(DependencyEdge(lo.name, hi.name, "file_conflict",
-                                  detail))
+                                  detail, shared=count))
     return out
 
 
@@ -237,7 +242,8 @@ def master_edges(nodes) -> list[DependencyEdge]:
                 continue
             seen.add(key)
             out.append(DependencyEdge(parent, node.name, "master_requirement",
-                                      "declares {} as a master".format(master)))
+                                      translate("Dag", "declares {} as a "
+                                                "master").format(master)))
     return out
 
 
@@ -270,6 +276,10 @@ def asset_path_edges(nodes) -> list[DependencyEdge]:
     seen: set[tuple[str, str]] = set()
     for node in nodes:
         for path in node.file_manifest:
+            # Every match has ".es" in it; most paths do not, and testing
+            # for that is far cheaper than running the pattern.
+            if ".es" not in path:
+                continue
             found = PLUGIN_IN_PATH.search(path)
             if not found:
                 continue
@@ -283,7 +293,7 @@ def asset_path_edges(nodes) -> list[DependencyEdge]:
             seen.add(key)
             out.append(DependencyEdge(
                 parent, node.name, "asset_path",
-                "ships assets under {}/".format(plugin)))
+                translate("Dag", "ships assets under {}/").format(plugin)))
     return out
 
 
@@ -312,7 +322,8 @@ def requirement_edges(nodes, needs) -> list[DependencyEdge]:
                 continue
             out.append(DependencyEdge(
                 base, node.name, "nexus_requirement",
-                note.strip() or "listed as a requirement on its Nexus page"))
+                note.strip() or translate(
+                    "Dag", "listed as a requirement on its Nexus page")))
     return out
 
 
@@ -342,8 +353,8 @@ def shader_edges(nodes) -> list[DependencyEdge]:
         for framework in frameworks:
             out.append(DependencyEdge(
                 framework, node.name, "shader_framework",
-                "PBR and parallax surfaces are drawn by {}, so it has to "
-                "load first".format(framework)))
+                translate("Dag", "PBR and parallax surfaces are drawn by "
+                          "{}, so it has to load first").format(framework)))
     return out
 
 
@@ -408,7 +419,8 @@ def light_edges(nodes) -> list[DependencyEdge]:
                 seen.add((heavy.name, flagged.name))
                 out.append(DependencyEdge(
                     heavy.name, flagged.name, "light_plugin",
-                    "{}: {}'s copy is ESL-flagged and {}'s is not".format(
+                    translate("Dag", "{}: {}'s copy is ESL-flagged and {}'s "
+                              "is not").format(
                         plugin, flagged.name, heavy.name)))
     return out
 
@@ -454,7 +466,8 @@ def loadable_edges(nodes, loaded) -> list[DependencyEdge]:
                 seen.add((broken.name, works.name))
                 out.append(DependencyEdge(
                     broken.name, works.name, "loadable_plugin",
-                    "{}: {}'s copy has all its masters; {}'s needs {}".format(
+                    translate("Dag", "{}: {}'s copy has all its masters; "
+                              "{}'s needs {}").format(
                         plugin, works.name, broken.name,
                         ", ".join(missing[broken.name]))))
     return out
@@ -781,7 +794,9 @@ def acyclic_edges(nodes, edges, decisions=None) -> tuple[
             dropped.append(edge)
 
     def weight(edge: DependencyEdge) -> int:
-        head = edge.detail.split(" ", 1)[0]
+        if edge.shared:
+            return edge.shared
+        head = edge.detail.split(" ", 1)[0]     # edges built elsewhere
         return int(head) if head.isdigit() else 0
 
     ranked = factual | {"name_extension", "nexus_requirement",
@@ -821,28 +836,34 @@ def name_extension_edges(nodes) -> list[DependencyEdge]:
     """
     live = [n for n in nodes if n.enabled and not n.is_separator
             and not n.is_unmanaged]
+    # Every name that could be a base, by its lowercase form; the first of
+    # two names differing only in case wins, as it did when this compared
+    # every pair. A name can then only be extended by one of its own
+    # prefixes that ends on a word boundary, so each name looks those up
+    # instead of being compared against the whole list.
+    bases: dict = {}
+    for other in live:
+        base = other.name.lower()
+        if len(base) >= 8 and len(base.split()) >= 2:
+            bases.setdefault(base, other)
     out: list[DependencyEdge] = []
     for node in live:
         low = node.name.lower()
         if any(word in low for word in SELF_ASSERTING):
             continue
         best = None
-        for other in live:
-            if other is node:
+        for cut in range(len(low) - 1, 7, -1):     # longest first
+            if low[cut].isalnum():
                 continue
-            base = other.name.lower()
-            if len(base) < 8 or len(base.split()) < 2:
-                continue
-            if not low.startswith(base) or len(low) == len(base):
-                continue
-            if low[len(base)].isalnum():
-                continue
-            if best is None or len(base) > len(best.name):
+            other = bases.get(low[:cut])
+            if other is not None and other is not node:
                 best = other
+                break
         if best is not None:
             out.append(DependencyEdge(
                 best.name, node.name, "name_extension",
-                "its name says it extends {}".format(best.name)))
+                translate("Dag", "its name says it extends {}").format(
+                    best.name)))
     return out
 
 
@@ -892,24 +913,34 @@ def unhonoured_freezes(order, freezes, below=None) -> list[tuple[str, str]]:
 
 # What each kind of edge means, in words a message box can show. The mod
 # named second is the one that has to load first.
+# Translated where they are used; {child} and {parent} are mod names.
 EDGE_WORDS = {
-    "master_requirement": "{child}'s plugin names a master that {parent} owns",
-    "asset_path": "{child} ships files inside {parent}'s plugin folder",
-    "nexus_requirement": "{child}'s Nexus page lists {parent} as a "
-                         "requirement",
-    "name_extension": "{child}'s name says it extends {parent}",
-    "file_conflict": "{child} and {parent} share files, so one has to "
-                     "override the other",
-    "user_rule": "you decided this pair yourself",
-    "skse_runtime": "{child}'s copy of a shared SKSE plugin loads on this "
-                    "game version and {parent}'s does not",
-    "skse_version": "{child}'s copy of a shared SKSE plugin is a newer "
-                    "build than {parent}'s",
-    "shader_framework": "{child} uses shaders that {parent} provides",
-    "light_plugin": "{child} ships an ESL-flagged copy of a plugin that "
-                    "{parent} ships full-size",
-    "loadable_plugin": "{child}'s copy of a plugin they both ship has all "
-                       "its masters and {parent}'s does not",
+    "master_requirement": QT_TRANSLATE_NOOP(
+        "Dag", "{child}'s plugin names a master that {parent} owns"),
+    "asset_path": QT_TRANSLATE_NOOP(
+        "Dag", "{child} ships files inside {parent}'s plugin folder"),
+    "nexus_requirement": QT_TRANSLATE_NOOP(
+        "Dag", "{child}'s Nexus page lists {parent} as a requirement"),
+    "name_extension": QT_TRANSLATE_NOOP(
+        "Dag", "{child}'s name says it extends {parent}"),
+    "file_conflict": QT_TRANSLATE_NOOP(
+        "Dag", "{child} and {parent} share files, so one has to override "
+        "the other"),
+    "user_rule": QT_TRANSLATE_NOOP("Dag", "you decided this pair yourself"),
+    "skse_runtime": QT_TRANSLATE_NOOP(
+        "Dag", "{child}'s copy of a shared SKSE plugin loads on this game "
+        "version and {parent}'s does not"),
+    "skse_version": QT_TRANSLATE_NOOP(
+        "Dag", "{child}'s copy of a shared SKSE plugin is a newer build "
+        "than {parent}'s"),
+    "shader_framework": QT_TRANSLATE_NOOP(
+        "Dag", "{child} uses shaders that {parent} provides"),
+    "light_plugin": QT_TRANSLATE_NOOP(
+        "Dag", "{child} ships an ESL-flagged copy of a plugin that {parent} "
+        "ships full-size"),
+    "loadable_plugin": QT_TRANSLATE_NOOP(
+        "Dag", "{child}'s copy of a plugin they both ship has all its "
+        "masters and {parent}'s does not"),
 }
 
 
@@ -971,12 +1002,17 @@ def blocker_text(order, edge, mod: str) -> str:
     """One line naming the mod in the way and what puts it there."""
     pos = {n.name: i for i, n in enumerate(order)}
     other = edge.child if edge.parent == mod else edge.parent
-    where = "before" if edge.child == mod else "after"
-    reason = EDGE_WORDS.get(edge.reason, edge.reason).format(
+    words = EDGE_WORDS.get(edge.reason)
+    reason = (translate("Dag", words) if words else edge.reason).format(
         child=edge.child, parent=edge.parent)
-    line = "{} has to load {} {}, because {}.".format(
-        other, where, mod, reason)
+    # Two whole sentences rather than "before"/"after" dropped into one.
+    if edge.child == mod:
+        line = translate("Dag", "{} has to load before {}, because {}.")
+    else:
+        line = translate("Dag", "{} has to load after {}, because {}.")
+    line = line.format(other, mod, reason)
     if edge.detail and edge.reason in ("nexus_requirement", "user_rule"):
-        line += '  The note on it reads: "{}".'.format(edge.detail)
-    return line + "  It is at position {} in the list.".format(
-        pos.get(other, 0) + 1)
+        line += translate("Dag", '  The note on it reads: "{}".').format(
+            edge.detail)
+    return line + translate("Dag", "  It is at position {} in the list."
+                            ).format(pos.get(other, 0) + 1)

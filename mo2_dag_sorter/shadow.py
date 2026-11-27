@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ._i18n import translate
+
 
 @dataclass
 class Shadowed:
@@ -26,9 +28,13 @@ class Shadowed:
 
     @property
     def headline(self) -> str:
-        return "{} ({} file{}) is fully overridden by {}".format(
-            self.name, self.files, "" if self.files == 1 else "s",
-            ", ".join(self.by[:3]))
+        if self.files == 1:
+            text = translate("Shadow", "{} (%n file) is fully overridden by "
+                             "{}", None, 1)
+        else:
+            text = translate("Shadow", "{} (%n files) is fully overridden by "
+                             "{}", None, self.files)
+        return text.format(self.name, ", ".join(self.by[:3]))
 
 
 def find(nodes, output_tier: int) -> list[Shadowed]:

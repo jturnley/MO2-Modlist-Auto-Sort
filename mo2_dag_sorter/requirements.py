@@ -32,6 +32,7 @@ import urllib.error
 import urllib.request
 
 from . import tls
+from ._i18n import translate
 
 ENDPOINT = "https://api.nexusmods.com/v2/graphql"
 BATCH = 20                      # mods per request; the server accepts aliases
@@ -67,7 +68,13 @@ def _rejection(exc: Exception) -> bool:
     for both, and the sorter has to keep working against Extender
     versions older than this decision.
     """
-    return "rejected the query" in str(exc).lower()         or "mod not found" in str(exc).lower()
+    # Newer Extenders flag it outright (NexusError.rejected). Its message is
+    # translated, so the words below are only for older Extenders - which
+    # are English-only, so the words still match there.
+    if getattr(exc, "rejected", False):
+        return True
+    return "rejected the query" in str(exc).lower() \
+        or "mod not found" in str(exc).lower()
 
 
 def _post(query: str, timeout: int = 30, client=None) -> dict:
@@ -87,12 +94,13 @@ def _post(query: str, timeout: int = 30, client=None) -> dict:
         return _post_direct(query, timeout)
     except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
         if not tls.available():
-            raise Unavailable(tls.NO_SSL)
+            raise Unavailable(tls.no_ssl())
         problem = tls.certificate_problem(exc)
         if problem:
-            raise Unavailable("this PC could not verify Nexus's certificate "
-                              "({}) - Windows' certificate store, not the "
-                              "connection".format(problem))
+            raise Unavailable(translate(
+                "Requirements", "this PC could not verify Nexus's "
+                "certificate ({}) - Windows' certificate store, not the "
+                "connection").format(problem))
         raise Unavailable("{}: {}".format(type(exc).__name__, exc))
 
 
@@ -112,7 +120,8 @@ def _post_direct(query: str, timeout: int = 30) -> dict:
         # it as twenty mods that need nothing - and now stamps them that
         # way. A refusal has to look like a refusal on this path too.
         first = errors[0]
-        raise Unavailable("Nexus rejected the query: {}".format(
+        raise Unavailable(translate(
+            "Requirements", "Nexus rejected the query: {}").format(
             first.get("message") if isinstance(first, dict) else first), True)
     return payload
 
@@ -252,7 +261,8 @@ def fetch(mod_ids, cache: RequirementCache, game: int,
     # at "looked up 40" should be able to tell which happened.
     aged = sum(1 for i in missing if i in cache.needs)
     if not missing:
-        return cache.needs, "requirements from cache ({} mods)".format(
+        return cache.needs, translate(
+            "Requirements", "requirements from cache (%n mods)", None,
             len(cache.needs))
 
     asked = 0
@@ -314,14 +324,18 @@ def fetch(mod_ids, cache: RequirementCache, game: int,
         time.sleep(0.2)
 
     cache.save()
-    report = "requirements: {} looked up, {} cached".format(
+    report = translate("Requirements",
+                       "requirements: {} looked up, {} cached").format(
         asked, len(cache.needs))
     if aged:
-        report += " ({} re-checked after a week)".format(aged)
+        report += translate("Requirements", " (%n re-checked after a week)",
+                            None, aged)
     if dead:
-        report += "; {} Nexus has no record of".format(dead)
+        report += "; " + translate("Requirements",
+                                   "%n Nexus has no record of", None, dead)
     missed = len(missing) - asked
     if missed and reason:
         short = reason if len(reason) <= 120 else reason[:117] + "..."
-        report += "; {} not looked up - {}".format(missed, short)
+        report += "; " + translate("Requirements", "%n not looked up - {}",
+                                   None, missed).format(short)
     return cache.needs, report

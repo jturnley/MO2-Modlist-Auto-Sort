@@ -11,6 +11,8 @@ The key is written to the same plugin setting as before.  Nothing here
 writes it anywhere else, and it is never shown back in full: once it is
 stored, the dialog reports only that a key is present and its last four
 characters, which is enough to tell two keys apart and not enough to use.
+
+Every string is translated in the ``KeyDialog`` context.
 """
 
 from __future__ import annotations
@@ -20,7 +22,12 @@ from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
                              QVBoxLayout)
 
 from . import keys, nexus
+from ._i18n import translate
 from .keys import OWNER, SETTING, masked
+
+
+def TITLE() -> str:
+    return translate("KeyDialog", "Nexus API Key")
 
 
 class KeyDialog(QDialog):
@@ -31,7 +38,7 @@ class KeyDialog(QDialog):
         super().__init__(parent)
         self._organizer = organizer
         self._domain = domain
-        self.setWindowTitle("Nexus API Key")
+        self.setWindowTitle(TITLE())
         self.resize(620, 0)
 
         stored = str(organizer.pluginSetting(OWNER, SETTING) or "").strip()
@@ -39,11 +46,11 @@ class KeyDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(self._status(stored, bridge_works), self))
 
-        entry = QLabel("Key:", self)
+        entry = QLabel(translate("KeyDialog", "Key:"), self)
         self._field = QLineEdit(self)
         self._field.setEchoMode(QLineEdit.EchoMode.Password)
-        self._field.setPlaceholderText(
-            "Paste a key here to override MO2's own connection")
+        self._field.setPlaceholderText(translate(
+            "KeyDialog", "Paste a key here to override MO2's own connection"))
         # Pre-filling would put the credential back on screen for no reason;
         # the status line above already says whether one is stored.
         row = QHBoxLayout()
@@ -51,19 +58,21 @@ class KeyDialog(QDialog):
         row.addWidget(self._field, 1)
         layout.addLayout(row)
 
-        show = QCheckBox("Show what I am typing", self)
+        show = QCheckBox(translate("KeyDialog", "Show what I am typing"), self)
         show.toggled.connect(
             lambda on: self._field.setEchoMode(
                 QLineEdit.EchoMode.Normal if on
                 else QLineEdit.EchoMode.Password))
         layout.addWidget(show)
 
-        layout.addWidget(QLabel(
+        layout.addWidget(QLabel(translate(
+            "KeyDialog",
             "Get one from nexusmods.com -> your profile -> Site preferences "
             "-> API keys.\nIt is stored in MO2's own plugin settings, not in "
-            "the mod list.", self))
+            "the mod list."), self))
 
-        why = QLabel(
+        why = QLabel(translate(
+            "KeyDialog",
             "Why a plugin might want its own key:\n\n"
             "MO2's built-in connection speaks the Nexus v1 API, and hands "
             "a plugin only what a v1 mod record holds - name, category, "
@@ -80,7 +89,7 @@ class KeyDialog(QDialog):
             "Better still, install the MO2 Nexus API Extender: it keeps "
             "one key for every plugin, sealed as strongly as your system "
             "allows, instead of a plain-text copy per plugin here. "
-            "This sorter uses it automatically when it is present.",
+            "This sorter uses it automatically when it is present."),
             self)
         why.setWordWrap(True)
         layout.addWidget(why)
@@ -90,11 +99,12 @@ class KeyDialog(QDialog):
         layout.addWidget(self._result)
 
         buttons = QDialogButtonBox(self)
-        test = QPushButton("Test", self)
+        test = QPushButton(translate("KeyDialog", "Test"), self)
         test.clicked.connect(self._test)
         buttons.addButton(test, QDialogButtonBox.ButtonRole.ActionRole)
         if stored:
-            clear = QPushButton("Remove stored key", self)
+            clear = QPushButton(translate("KeyDialog", "Remove stored key"),
+                                self)
             clear.clicked.connect(self._clear)
             buttons.addButton(clear,
                               QDialogButtonBox.ButtonRole.DestructiveRole)
@@ -107,15 +117,18 @@ class KeyDialog(QDialog):
     @staticmethod
     def _status(stored: str, bridge_works: bool) -> str:
         if stored:
-            return ("A key of your own is stored ({}) and is being used "
-                    "instead of MO2's connection.".format(masked(stored)))
+            return translate(
+                "KeyDialog", "A key of your own is stored ({}) and is being "
+                "used instead of MO2's connection.").format(masked(stored))
         if bridge_works:
-            return ("MO2's own Nexus connection is working, and the sorter "
-                    "is using it. You only need a key here if that stops "
-                    "being enough.")
-        return ("MO2's own Nexus connection is not available to the sorter "
-                "on this build. Without a key here, categories and "
-                "requirements come from what is already cached on disk.")
+            return translate(
+                "KeyDialog", "MO2's own Nexus connection is working, and the "
+                "sorter is using it. You only need a key here if that stops "
+                "being enough.")
+        return translate(
+            "KeyDialog", "MO2's own Nexus connection is not available to the "
+            "sorter on this build. Without a key here, categories and "
+            "requirements come from what is already cached on disk.")
 
     def _typed(self) -> str:
         return self._field.text().strip()
@@ -124,45 +137,46 @@ class KeyDialog(QDialog):
         key = self._typed() or str(
             self._organizer.pluginSetting(OWNER, SETTING) or "").strip()
         if not key:
-            self._result.setText("Nothing to test - the box is empty and no "
-                                 "key is stored.")
+            self._result.setText(translate(
+                "KeyDialog",
+                "Nothing to test - the box is empty and no key is stored."))
             return
-        self._result.setText("Checking...")
+        self._result.setText(translate("KeyDialog", "Checking..."))
         self._result.repaint()
         try:
             categories = nexus.fetch_categories(self._domain, key)
         except Exception as exc:                  # any network or HTTP error
-            self._result.setText(
-                "That key did not work: {}".format(keys.reason(exc)))
+            self._result.setText(translate(
+                "KeyDialog", "That key did not work: {}").format(
+                    keys.reason(exc)))
             return
-        self._result.setText(
-            "Works - Nexus returned {} categories for {}.".format(
-                len(categories), self._domain))
+        self._result.setText(translate(
+            "KeyDialog", "Works - Nexus returned %n categories for {}.",
+            None, len(categories)).format(self._domain))
 
     def _save(self) -> None:
         key = self._typed()
         if not key:
-            QMessageBox.information(
-                self, "Nexus API Key",
-                "Nothing was typed, so nothing has been changed.")
+            QMessageBox.information(self, TITLE(), translate(
+                "KeyDialog",
+                "Nothing was typed, so nothing has been changed."))
             return
         self._organizer.setPluginSetting(OWNER, SETTING, key)
-        QMessageBox.information(
-            self, "Nexus API Key",
-            "Saved ({}). The sorter will use this instead of MO2's own "
-            "connection.".format(masked(key)))
+        QMessageBox.information(self, TITLE(), translate(
+            "KeyDialog", "Saved ({}). The sorter will use this instead of "
+            "MO2's own connection.").format(masked(key)))
         self.accept()
 
     def _clear(self) -> None:
         if QMessageBox.question(
-                self, "Nexus API Key",
-                "Remove the stored key? The sorter will go back to using "
-                "MO2's own Nexus connection.",
+                self, TITLE(),
+                translate("KeyDialog", "Remove the stored key? The sorter "
+                          "will go back to using MO2's own Nexus connection."),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No
         ) != QMessageBox.StandardButton.Yes:
             return
         self._organizer.setPluginSetting(OWNER, SETTING, "")
-        QMessageBox.information(self, "Nexus API Key",
-                                "Removed. MO2's own connection will be used.")
+        QMessageBox.information(self, TITLE(), translate(
+            "KeyDialog", "Removed. MO2's own connection will be used."))
         self.accept()

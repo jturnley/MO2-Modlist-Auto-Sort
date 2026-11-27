@@ -24,6 +24,7 @@ import contextlib
 
 # One name per plugin - see the note on the definition.
 from .vault_key import REQUESTER  # noqa: F401
+from ._i18n import translate
 
 
 def installed() -> bool:
@@ -104,10 +105,16 @@ def finish(client) -> None:
 def status(client) -> str:
     """One line for the report, saying where the metadata came from."""
     if client is None:
-        return ("Nexus API Extender not installed - using this plugin's own "
-                "connection. Installing it shares one stored key and one "
-                "response cache across your plugins.")
-    where = "with your stored key" if client.has_key else "without a key"
+        return translate(
+            "NexusApi", "Nexus API Extender not installed - using this "
+            "plugin's own connection. Installing it shares one stored key "
+            "and one response cache across your plugins.")
     left = client.remaining()
-    quota = "" if left is None else ", {} v1 requests left this hour".format(left)
-    return "Nexus API Extender {}{}.".format(where, quota)
+    quota = "" if left is None else translate(
+        "NexusApi", ", %n v1 requests left this hour", None, left)
+    if client.has_key:
+        return translate("NexusApi",
+                         "Nexus API Extender with your stored key{}."
+                         ).format(quota)
+    return translate("NexusApi", "Nexus API Extender without a key{}."
+                     ).format(quota)

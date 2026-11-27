@@ -982,7 +982,7 @@ _key_tool = _plugin_src[_plugin_src.index("class DagKeyTool"):
                         _plugin_src.index("def create_plugins")]
 _create = _plugin_src[_plugin_src.index("def create_plugins"):]
 check("the sorter's key tool still claims that name",
-      'return self.tr("Nexus API Key")' in _key_tool, True)
+      'return translate("DagSorter", "Nexus API Key")' in _key_tool, True)
 check("but stands down when the Extender is installed",
       "if not nexus_api.installed():" in _create
       and "tools.append(DagKeyTool())" in _create, True)
@@ -992,8 +992,8 @@ check("but stands down when the Extender is installed",
 check("and does so without failing to initialise",
       "return not nexus_api.installed()" in _plugin_src, False)
 check("the tools that do not depend on the Extender are always offered",
-      "tools = [DagSorterTool(), DagRestoreTool(), DagMenuTool()]"
-      in _create, True)
+      "tools = [DagSorterTool(), DagRestoreTool(), DagInstallTool(),\n"
+      "             DagMenuTool()]" in _create, True)
 
 # -- one plugin, one row in the vault's caller list ----------------------
 from mo2_dag_sorter import nexus_api as _na, vault_key as _vk
@@ -1373,7 +1373,7 @@ check("every installed filter is held, so the cycle collector cannot "
 check("hooked means a live filter of ours, not a flag on the widget",
       "HOOKED" not in _menu_src and "def _hook_on(view):" in _menu_src, True)
 check("a missing mod list is reported as such, not as success",
-      "could not be found in this window" in _menu_src, True)
+      "mod list could not be found in this " in _menu_src, True)
 check("a destroyed remembered window falls back to asking Qt",
       "_state[\"window\"] = None" in _menu_src, True)
 
@@ -2369,6 +2369,182 @@ with _tempfile.TemporaryDirectory() as _root:
     skse.load_cache(_old_cache)
     check("a cache saved before plugin names were read is not trusted",
           "c:/x.dll" in skse._cache, False)
+
+
+# --- 0.11: what happens to a newly installed mod ----------------------------
+from mo2_dag_sorter import install_action as _act
+
+check("the default is to ask", _act.normalise(None), "ask")
+check("a typo in the free-text setting asks rather than acting",
+      _act.normalise("enabel"), "ask")
+check("the forms a person might type are understood",
+      [_act.normalise(v) for v in ("Enable and sort", "enable-only",
+                                   "NONE", " enable_sort ")],
+      ["enable_sort", "enable", "nothing", "enable_sort"])
+check("nothing does nothing", _act.steps("nothing", False), (False, False))
+check("enable switches a new mod on and leaves it",
+      _act.steps("enable", False), (True, False))
+check("enable and sort does both", _act.steps("enable_sort", False),
+      (True, True))
+check("a reinstalled mod that is already on is not switched on again",
+      _act.steps("enable_sort", True), (False, True))
+check("and enable alone then has nothing to do",
+      _act.steps("enable", True), (False, False))
+check("every choice has a label", all(_act.label(c) for c in _act.CHOICES),
+      True)
+
+_plugin_src3 = io.open(os.path.join(os.path.dirname(os.path.abspath(
+    _act.__file__)), "plugin.py"), encoding="utf-8").read()
+check("the install hook is always registered, so the setting can change "
+      "without a restart",
+      "organizer.modList().onModInstalled(self._on_installed)" in _plugin_src3
+      and "sort_on_install" not in _plugin_src3, True)
+check("a switched-on mod is written as on, never back off",
+      'node.prefix = "+"' in _plugin_src3, True)
+
+# --- 0.11: walking mod folders faster, with the same answer -----------------
+from mo2_dag_sorter import scan as _scan
+
+
+def _os_walk_manifest(mod_dir):
+    """The walker as it was before 0.11, kept as the reference."""
+    out = []
+    root_len = len(mod_dir.rstrip("\\" + "/")) + 1
+    for dirpath, dirnames, filenames in os.walk(mod_dir):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in filenames:
+            low = name.lower()
+            if not low.endswith(_scan.ASSET_EXTS) or low in _scan.IGNORED_NAMES:
+                continue
+            rel = os.path.join(dirpath, name)[root_len:]
+            out.append(rel.replace("\\", "/").lower())
+    return out
+
+
+with _tempfile.TemporaryDirectory() as _root:
+    _mod = os.path.join(_root, "Some Mod")
+    for _rel in ("Meshes/Armor/A.NIF", "meshes/armor/b.nif", "Textures/x.dds",
+                 "readme.txt", "SKSE/Plugins/Thing.dll", "Plugin.esp",
+                 ".git/objects/zz.txt", "notes.docx", "Sound/Voice/q.esp/v.fuz",
+                 "deep/a/b/c/d/e.pex"):
+        _path = os.path.join(_mod, *_rel.split("/"))
+        os.makedirs(os.path.dirname(_path), exist_ok=True)
+        io.open(_path, "w").close()
+    check("the new walker finds what os.walk found, in the same order",
+          _scan.scan_mod_dir(_mod), _os_walk_manifest(_mod))
+    check("and skips dot-folders and readmes as before",
+          [p for p in _scan.scan_mod_dir(_mod)
+           if p.startswith(".git") or p == "readme.txt"], [])
+    check("a folder that is not there is an empty list, not an error",
+          _scan.scan_mod_dir(os.path.join(_root, "missing")), [])
+
+    _session = _scan.SessionCache()
+    _session.put("Some Mod", _mod, ["a.nif"])
+    check("an unchanged folder is served from the session",
+          _session.get("Some Mod", _mod), ["a.nif"])
+    _meta = os.path.join(_mod, "meta.ini")
+    with io.open(_meta, "w") as _fh:
+        _fh.write("[General]\nmodid=7\n")
+    _later = os.stat(_mod).st_mtime + 60
+    os.utime(_meta, (_later, _later))
+    check("a rewritten meta.ini - a reinstall or merge - reads it again",
+          _session.get("Some Mod", _mod), None)
+    _session.put("Some Mod", _mod, ["b.nif"])
+    _session.forget(_mod)
+    check("forgetting one folder drops it", _session.get("Some Mod", _mod),
+          None)
+    _session.put("Some Mod", _mod, ["b.nif"])
+    _session.forget()
+    check("forgetting everything drops everything", len(_session), 0)
+
+    check("meta.ini is read", _scan.read_meta(_mod)[0], 7)
+    with io.open(_meta, "w") as _fh:
+        _fh.write("[General]\nmodid=12345\n")
+    os.utime(_meta, (_later + 60, _later + 60))
+    check("and read again when it changes, not served stale",
+          _scan.read_meta(_mod)[0], 12345)
+
+
+def _brute_extensions(nodes):
+    """name_extension_edges as it was before 0.11: every pair compared."""
+    live = [n for n in nodes if n.enabled and not n.is_separator
+            and not n.is_unmanaged]
+    out = []
+    for nd in live:
+        low = nd.name.lower()
+        if any(w in low for w in dag.SELF_ASSERTING):
+            continue
+        best = None
+        for other in live:
+            if other is nd:
+                continue
+            base = other.name.lower()
+            if len(base) < 8 or len(base.split()) < 2:
+                continue
+            if not low.startswith(base) or len(low) == len(base):
+                continue
+            if low[len(base)].isalnum():
+                continue
+            if best is None or len(base) > len(best.name):
+                best = other
+        if best is not None:
+            out.append((best.name, nd.name))
+    return out
+
+
+_names = ["Heavy Armory - New Weapons", "Heavy Armory - New Weapons - Glaive",
+          "Heavy Armory", "HEAVY ARMORY - new weapons", "Heavy Armorylike Mod",
+          "Immersive Armors", "Immersive Armors - Extra", "Immersive ArmorsX",
+          "Ab Cd", "Ab Cdef Gh - x", "Some Mod Patch Hub - y", "Some Mod Patch",
+          "Lux Via", "Lux Via - Addon (Fixed)", "Lux Via - Addon (Fixed) 2"]
+_ext_nodes = [node(n, i) for i, n in enumerate(_names)]
+check("the faster name lookup gives the same edges as comparing every pair",
+      [(e.parent, e.child) for e in dag.name_extension_edges(_ext_nodes)],
+      _brute_extensions(_ext_nodes))
+check("and the comparison is not vacuous",
+      len(_brute_extensions(_ext_nodes)) >= 3, True)
+
+_shared = DependencyEdge("A", "B", "file_conflict", "garbled", shared=9)
+check("a conflict is ranked on its stored file count, not its words",
+      _shared.shared, 9)
+check("and the count does not change what the edge is equal to",
+      _shared == DependencyEdge("A", "B", "file_conflict", "garbled"), True)
+
+# --- 0.11: sorting with a mod MO2 has switched on but not yet saved ----------
+from mo2_dag_sorter import pipeline as _pipe11, requirements as _req
+
+with _tempfile.TemporaryDirectory() as _root:
+    os.makedirs(os.path.join(_root, "profiles", "Default"))
+    for _name, _files in (("Base Mod", ("base.esp",)),
+                          ("New Mod", ("textures/new.dds",))):
+        _folder = os.path.join(_root, "mods", _name)
+        os.makedirs(os.path.join(_folder, "textures"), exist_ok=True)
+        for _f in _files:
+            io.open(os.path.join(_folder, *_f.split("/")), "w").close()
+    with io.open(os.path.join(_root, "profiles", "Default", "modlist.txt"),
+                 "w") as _fh:
+        _fh.write("-New Mod\n+Base Mod\n")
+    _saved_post = _req._post
+
+    def _offline(*_a, **_k):
+        raise _req.Unavailable("offline in tests")
+
+    _req._post = _offline
+    try:
+        _off = _pipe11.sort_profile(_root, "Default",
+                                    cache_dir=os.path.join(_root, "data"))
+        _on = _pipe11.sort_profile(_root, "Default",
+                                   cache_dir=os.path.join(_root, "data"),
+                                   enabled=["New Mod"], reuse_scan=True)
+    finally:
+        _req._post = _saved_post
+    check("a mod switched off in modlist.txt is sorted as off",
+          [n.enabled for n in _off.nodes if n.name == "New Mod"], [False])
+    check("but as on when the plugin has just switched it on",
+          [n.enabled for n in _on.nodes if n.name == "New Mod"], [True])
+    check("and its files are read for that sort",
+          [n.file_manifest for n in _on.nodes if n.name == "New Mod"],
+          [["textures/new.dds"]])
 
 
 if failures:

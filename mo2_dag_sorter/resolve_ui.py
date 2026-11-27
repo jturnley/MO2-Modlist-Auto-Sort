@@ -37,15 +37,28 @@ from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox,
                              QRadioButton, QTableWidget, QTableWidgetItem,
                              QVBoxLayout, QWidget, QHBoxLayout)
 
+from ._i18n import QT_TRANSLATE_NOOP, translate
+
 BREAK = chr(10)          # newline, spelled out to keep escapes out of the UI text
 
+# English as stored in user_rules.json ("was: ..."); shown translated.
 WHY = {
-    "master_requirement": "declares the other as a master",
-    "asset_path": "ships files under the other's plugin folder",
-    "file_conflict": "overlapping files",
-    "user_rule": "your earlier choice",
-    "nexus_requirement": "listed as a requirement on Nexus",
+    "master_requirement": QT_TRANSLATE_NOOP(
+        "ResolveDialog", "declares the other as a master"),
+    "asset_path": QT_TRANSLATE_NOOP(
+        "ResolveDialog", "ships files under the other's plugin folder"),
+    "file_conflict": QT_TRANSLATE_NOOP("ResolveDialog", "overlapping files"),
+    "user_rule": QT_TRANSLATE_NOOP("ResolveDialog", "your earlier choice"),
+    "nexus_requirement": QT_TRANSLATE_NOOP(
+        "ResolveDialog", "listed as a requirement on Nexus"),
 }
+
+
+def why(reason: str) -> str:
+    """The reason code in words, in MO2's language."""
+    if reason in WHY:
+        return translate("ResolveDialog", WHY[reason])
+    return reason
 
 
 class ResolveDialog(QDialog):
@@ -54,7 +67,8 @@ class ResolveDialog(QDialog):
     def __init__(self, conflicts, decisions, parent=None, nodes=(),
                  domain: str = "skyrimspecialedition") -> None:
         super().__init__(parent)
-        self.setWindowTitle("Conflicts the sorter had to settle")
+        self.setWindowTitle(translate("ResolveDialog",
+                                      "Conflicts the sorter had to settle"))
         self.resize(900, 420)
         self._conflicts = list(conflicts)
         self._decisions = decisions
@@ -63,31 +77,30 @@ class ResolveDialog(QDialog):
         self._groups: list[QButtonGroup] = []
 
         layout = QVBoxLayout(self)
-        intro = QLabel(
-            "Each of these pairs makes two demands that cannot both be met."
-            + BREAK + BREAK +
+        intro = QLabel(translate(
+            "ResolveDialog",
+            "Each of these pairs makes two demands that cannot both be "
+            "met.\n\n"
             "Select the mod that should WIN - the one whose files you "
             "want to keep. It is placed lower in the left pane, so it "
-            "loads last and overwrites the other."
-            + BREAK + BREAK +
+            "loads last and overwrites the other.\n\n"
             "The mod you select is always the one shown on the right. "
             "Picking the mod on the left moves it across, so the columns "
             "always describe what you are actually going to get. Rows "
             "start on the sorter's own answer, so leaving a row alone "
-            "keeps it."
-            + BREAK + BREAK +
+            "keeps it.\n\n"
             "File dates and versions are shown to help: where two mods "
             "replace each other's files the one built later is usually the "
             "one meant to win, and a mod's own page often says outright "
-            "which it expects to overwrite.")
+            "which it expects to overwrite."))
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
         self.table = QTableWidget(len(self._conflicts), 3, self)
         self.table.setHorizontalHeaderLabels(
-            ["Loads first - gets overwritten",
-             "Loads last - WINS (selected)",
-             "Why they clash"])
+            [translate("ResolveDialog", "Loads first - gets overwritten"),
+             translate("ResolveDialog", "Loads last - WINS (selected)"),
+             translate("ResolveDialog", "Why they clash")])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         header = self.table.horizontalHeader()
@@ -102,13 +115,14 @@ class ResolveDialog(QDialog):
         for row, edge in enumerate(self._conflicts):
             self._groups.append(QButtonGroup(self))
             self._render_row(row)
-            cell = QTableWidgetItem(WHY.get(edge.reason, edge.reason))
+            cell = QTableWidgetItem(why(edge.reason))
             cell.setToolTip(edge.detail or "")
             self.table.setItem(row, 2, cell)
 
         self.table.resizeRowsToContents()
         layout.addWidget(self.table)
-        self.remember = QCheckBox("Remember these answers for future sorts")
+        self.remember = QCheckBox(translate(
+            "ResolveDialog", "Remember these answers for future sorts"))
         self.remember.setChecked(True)
         layout.addWidget(self.remember)
 
@@ -149,8 +163,9 @@ class ResolveDialog(QDialog):
         button = QRadioButton(self._label(name), widget)
         button.setChecked(checked)
         button.setProperty("mod_name", name)
-        button.setToolTip("Select this mod to make it win: it will load "
-                          "last and overwrite the other.")
+        button.setToolTip(translate(
+            "ResolveDialog", "Select this mod to make it win: it will load "
+            "last and overwrite the other."))
         group.addButton(button)
         # Only the losing side is clickable into. Choosing it makes it the
         # winner, which redraws the row with it on the right.
@@ -176,10 +191,12 @@ class ResolveDialog(QDialog):
         if node is None or not node.nexus_id:
             return None
         label = QLabel('<a href="https://www.nexusmods.com/{}/mods/{}">'
-                       'Nexus</a>'.format(self._domain, node.nexus_id))
+                       '{}</a>'.format(self._domain, node.nexus_id,
+                                       translate("ResolveDialog", "Nexus")))
         label.setOpenExternalLinks(True)
-        label.setToolTip("Open this mod's page - its requirements and "
-                         "install order are stated there")
+        label.setToolTip(translate(
+            "ResolveDialog", "Open this mod's page - its requirements and "
+            "install order are stated there"))
         return label
 
     def _label(self, name: str) -> str:

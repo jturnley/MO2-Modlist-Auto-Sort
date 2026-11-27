@@ -18,6 +18,8 @@ from __future__ import annotations
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QMenu, QTreeView
 
+from ._i18n import translate
+
 VIEW_NAMES = ("modList", "modListView", "listMods")
 
 
@@ -293,24 +295,28 @@ def reattach(window=None) -> tuple:
     window = _window(window)
     build = _state.get("build")
     if window is None or build is None:
-        return False, ("The sorter has not finished starting up yet. Open a "
-                       "mod list and try again, or restart MO2.")
+        return False, translate(
+            "ContextMenu", "The sorter has not finished starting up yet. "
+            "Open a mod list and try again, or restart MO2.")
     try:
         view = find_view(window)
     except RuntimeError:
-        return False, "MO2's window has gone away. Restart MO2."
+        return False, translate("ContextMenu",
+                                "MO2's window has gone away. Restart MO2.")
     if view is None:
-        return False, ("MO2's mod list could not be found in this window, so "
-                       "there is nothing to attach to. This usually means a "
-                       "newer MO2 renamed or restructured it. Both actions "
-                       "are still on the Tools menu.")
+        return False, translate(
+            "ContextMenu", "MO2's mod list could not be found in this "
+            "window, so there is nothing to attach to. This usually means a "
+            "newer MO2 renamed or restructured it. Both actions are still on "
+            "the Tools menu.")
     # Take ours off and hook again, rather than answering "already
     # attached": that is the least useful reply to someone saying it is
     # not working, and a fresh filter costs nothing.
     _remove(view)
     hook = install(window, build)
     if hook is None:
-        return False, "The mod list refused the hook. Restart MO2."
-    return True, ("Attached. Right-click one or more mods in the left pane "
-                  "and the sorter's entries will be at the bottom of the "
-                  "menu.")
+        return False, translate(
+            "ContextMenu", "The mod list refused the hook. Restart MO2.")
+    return True, translate(
+        "ContextMenu", "Attached. Right-click one or more mods in the left "
+        "pane and the sorter's entries will be at the bottom of the menu.")

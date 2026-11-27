@@ -18,6 +18,8 @@ import shutil
 import time
 from dataclasses import dataclass
 
+from ._i18n import translate
+
 DIRNAME = "modlist_backups"
 STAMP = "%Y-%m-%d_%H%M%S"
 NAME = re.compile(r"^modlist_(\d{4}-\d{2}-\d{2}_\d{6})(?:_([^.]*))?\.txt$")
@@ -37,8 +39,9 @@ class Backup:
 
     @property
     def headline(self) -> str:
-        return "{}   {:>5} mods   {}".format(
-            self.stamp, self.mods, self.label or "manual")
+        return translate("Backups", "{}   {:>5} mods   {}").format(
+            self.stamp, self.mods,
+            self.label or translate("Backups", "manual"))
 
 
 def folder(list_path: str) -> str:

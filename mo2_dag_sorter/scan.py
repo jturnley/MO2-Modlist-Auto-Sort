@@ -46,6 +46,28 @@ def read_meta(mod_dir: str) -> tuple[int | None, str, str, list]:
     shows it and lets the user decide.
     """
     path = os.path.join(mod_dir, "meta.ini")
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None, "", "", []
+    # Parsing 1,200 meta.ini files with configparser is most of a second,
+    # and between two sorts nearly none of them change. Keyed on the file's
+    # own modification time and size, so an edited one is always re-read.
+    stamp = (info.st_mtime_ns, info.st_size)
+    hit = _META.get(path)
+    if hit is not None and hit[0] == stamp:
+        mod_id, date, version, cats = hit[1]
+        return mod_id, date, version, list(cats)
+    found = _parse_meta(path)
+    _META[path] = (stamp, found)
+    mod_id, date, version, cats = found
+    return mod_id, date, version, list(cats)
+
+
+_META: dict = {}
+
+
+def _parse_meta(path: str) -> tuple[int | None, str, str, list]:
     if not os.path.isfile(path):
         return None, "", "", []
     cp = configparser.ConfigParser(strict=False, interpolation=None)
@@ -82,21 +104,128 @@ def scan_mod_dir(mod_dir: str) -> list[str]:
     case-sensitive comparison would miss every one of those collisions.
     """
     out: list[str] = []
-    root_len = len(mod_dir.rstrip("\\" + "/")) + 1
-    for dirpath, dirnames, filenames in os.walk(mod_dir):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        for name in filenames:
-            low = name.lower()
-            if not low.endswith(ASSET_EXTS) or low in IGNORED_NAMES:
-                continue
-            rel = os.path.join(dirpath, name)[root_len:]
-            out.append(rel.replace("\\", "/").lower())
+    _walk(mod_dir, "", out)
     return out
 
 
-def populate(nodes, mods_dir: str, cache=None, progress=None) -> None:
-    """Fill in the meta.ini fields and ``file_manifest`` on every node."""
+def _walk(folder: str, prefix: str, out: list) -> None:
+    """os.walk's answer, in os.walk's order, at about a third of the cost.
+
+    os.walk asks Windows whether every directory is a link - one extra
+    call each, 40,000 of them on a large list. ``os.scandir`` already
+    knows, from the listing it has just read, so this asks nobody. The
+    rules are os.walk's: a link to a directory is listed but not entered,
+    a broken link counts as a file, an unreadable folder is skipped, and
+    a folder's own files come before its subfolders'.
+    """
+    try:
+        listing = os.scandir(folder)
+    except OSError:
+        return
+    subdirs = []
+    with listing:
+        for entry in listing:
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                is_dir = False
+            if is_dir:
+                subdirs.append(entry)
+                continue
+            low = entry.name.lower()
+            if low.endswith(ASSET_EXTS) and low not in IGNORED_NAMES:
+                out.append(prefix + low)
+    for entry in subdirs:
+        if entry.name.startswith("."):
+            continue
+        try:
+            if entry.is_symlink():
+                continue
+        except OSError:
+            continue
+        _walk(entry.path, prefix + entry.name.lower() + "/", out)
+
+
+class SessionCache:
+    """Each mod's file list, kept for as long as MO2 is running.
+
+    Walking every mod folder is most of what a sort costs - several seconds
+    on a list of a thousand mods - and installing one mod changes one
+    folder. So the lists are kept between sorts and only re-read when
+    something says the folder changed:
+
+    * the folder's own modification time, or its meta.ini's, moved - which
+      is what a reinstall, a merge or a replace does;
+    * :meth:`forget` was called for it - the plugin does that when MO2
+      reports a mod installed or removed;
+    * :meth:`forget` was called with no path - the plugin does that after
+      any program MO2 ran (BodySlide, Nemesis, DynDOLOD write into mod
+      folders), and a full sort from the Tools menu always reads fresh.
+
+    What it can miss is a file added deep inside a mod folder by hand in
+    Explorer while MO2 is open. The next full sort, program run or restart
+    picks that up.
+    """
+
+    def __init__(self) -> None:
+        self._files: dict = {}
+
+    @staticmethod
+    def _stamp(path: str):
+        try:
+            folder = os.stat(path).st_mtime_ns
+        except OSError:
+            return None
+        try:
+            meta = os.stat(os.path.join(path, "meta.ini")).st_mtime_ns
+        except OSError:
+            meta = 0
+        return folder, meta
+
+    def get(self, name: str, path: str):
+        held = self._files.get(os.path.normcase(path))
+        if held is None:
+            return None
+        if held[0] != self._stamp(path):
+            self._files.pop(os.path.normcase(path), None)
+            return None
+        return held[1]
+
+    def put(self, name: str, path: str, files) -> None:
+        stamp = self._stamp(path)
+        if stamp is not None:
+            self._files[os.path.normcase(path)] = (stamp, list(files))
+
+    def forget(self, path: str | None = None) -> None:
+        if path is None:
+            self._files.clear()
+            _META.clear()
+        else:
+            self._files.pop(os.path.normcase(path), None)
+
+    def __len__(self) -> int:
+        return len(self._files)
+
+
+# The one the plugin uses. A module-level instance because MO2 loads the
+# plugin once per session, which is exactly the lifetime wanted.
+SESSION = SessionCache()
+
+
+def populate(nodes, mods_dir: str, cache=None, progress=None,
+             fresh: bool = False) -> None:
+    """Fill in the meta.ini fields and ``file_manifest`` on every node.
+
+    With a ``cache``, unchanged folders are not walked again. ``fresh``
+    walks every folder regardless and refills the cache, which is what a
+    full sort does: it is the one the user runs to get everything right.
+
+    The folders that do need walking are walked a few at a time. Listing a
+    directory is a wait on Windows, not work for Python, and several waits
+    overlap; the lists come back in the same order either way.
+    """
     total = len(nodes)
+    todo = []
     for i, node in enumerate(nodes):
         if node.is_separator or node.is_unmanaged or not node.enabled:
             continue
@@ -105,14 +234,34 @@ def populate(nodes, mods_dir: str, cache=None, progress=None) -> None:
             continue
         (node.nexus_id, node.file_date, node.version,
          node.mo2_categories) = read_meta(path)
-        files = cache.get(node.name, path) if cache is not None else None
+        files = (cache.get(node.name, path)
+                 if cache is not None and not fresh else None)
         if files is None:
-            files = scan_mod_dir(path)
+            todo.append((i, node, path))
+        else:
+            node.file_manifest = files
+    if not todo:
+        return
+    if progress is not None or len(todo) < 8:
+        walked = map(scan_mod_dir, (path for _i, _n, path in todo))
+        pool = None
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        pool = ThreadPoolExecutor(max_workers=WORKERS)
+        walked = pool.map(scan_mod_dir, [path for _i, _n, path in todo])
+    try:
+        for (i, node, path), files in zip(todo, walked):
             if cache is not None:
                 cache.put(node.name, path, files)
-        node.file_manifest = files
-        if progress is not None and not progress(i, total, node.name):
-            return
+            node.file_manifest = files
+            if progress is not None and not progress(i, total, node.name):
+                return
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
+
+
+WORKERS = 8
 
 
 # The top-level names the game loads from Data. Anything a mod ships outside

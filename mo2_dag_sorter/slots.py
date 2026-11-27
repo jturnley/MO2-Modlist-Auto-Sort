@@ -26,6 +26,8 @@ import os
 import struct
 from dataclasses import dataclass, field
 
+from ._i18n import translate
+
 PLUGIN_EXTS = (".esp", ".esm", ".esl")
 LIGHT_FLAG = 0x200
 # 0x00-0xFD for full plugins; 0xFE holds every light one, 0xFF is the
@@ -158,7 +160,8 @@ class SlotChange:
 
     @property
     def headline(self) -> str:
-        return "full plugin slots {} -> {} (limit {})".format(
+        return translate("Slots", "full plugin slots {} -> {} (limit {})"
+                         ).format(
             self.before, self.after, FULL_LIMIT)
 
 

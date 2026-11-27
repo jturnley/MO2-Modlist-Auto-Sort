@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 
 from . import skse
+from ._i18n import translate
 from .loadcheck import LISTED, Problem
 
 LAUNCHERS = frozenset(("skse64_loader.exe", "sksevr_loader.exe",
@@ -92,13 +93,15 @@ def _judge(where, name, info, runtime, install) -> list[Problem]:
         return []                  # not an SKSE plugin: SKSE ignores it
     if info.loads_on(runtime) is False:
         return [Problem(where, name, "skse_runtime",
-                        "built for a different game version - SKSE will not "
-                        "load it on {}".format(_dotted(runtime[:3])))]
+                        translate("LoadCheck", "built for a different game "
+                                  "version - SKSE will not load it on {}"
+                                  ).format(_dotted(runtime[:3])))]
     if install is not None and install.version \
             and info.needs_newer_skse(install.version):
         return [Problem(where, name, "skse_too_old",
-                        "needs SKSE {} or newer, and {} is installed - SKSE "
-                        "will not load it".format(
+                        translate("LaunchCheck", "needs SKSE {} or newer, "
+                                  "and {} is installed - SKSE will not load "
+                                  "it").format(
                             _dotted(skse.unpack_version(info.skse_required)),
                             _dotted(install.version)))]
     return []
@@ -107,13 +110,17 @@ def _judge(where, name, info, runtime, install) -> list[Problem]:
 def _skse_problems(runtime, install) -> list[Problem]:
     if install is None or install.found:
         return []
-    detail = "SKSE for game version {} is not installed".format(
-        _dotted(runtime[:3]))
     if install.others:
-        detail += " (the game folder has {}, which is for another game " \
-                  "version)".format(", ".join(install.others))
-    detail += ", so the loader will not start the game and no SKSE plugin " \
-              "will load"
+        detail = translate(
+            "LaunchCheck", "SKSE for game version {} is not installed (the "
+            "game folder has {}, which is for another game version), so the "
+            "loader will not start the game and no SKSE plugin will load"
+        ).format(_dotted(runtime[:3]), ", ".join(install.others))
+    else:
+        detail = translate(
+            "LaunchCheck", "SKSE for game version {} is not installed, so "
+            "the loader will not start the game and no SKSE plugin will load"
+        ).format(_dotted(runtime[:3]))
     return [Problem("the game folder", install.wanted, "skse_missing", detail)]
 
 
@@ -161,13 +168,16 @@ def check(mods, game_dir, overwrite_dir=None, active=None) -> list[Problem]:
     need = skse.address_library_file(runtime)
     if users and need and not _has(need, mods, data_dir, overwrite_dir):
         shown = ", ".join(users[:LISTED]) + (
-            " and {} more".format(len(users) - LISTED)
+            translate("LoadCheck", " and %n more", None,
+                      len(users) - LISTED)
             if len(users) > LISTED else "")
         out.append(Problem(
             "not installed", os.path.basename(need), "address_library",
-            "{} SKSE plugin(s) need Address Library for game version {} and "
-            "it is not installed, so none of them will load ({})".format(
-                len(users), _dotted(runtime[:3]), shown)))
+            translate("LaunchCheck",
+                      "%n SKSE plugin(s) need Address Library for game "
+                      "version {} and it is not installed, so none of them "
+                      "will load ({})", None, len(users)).format(
+                _dotted(runtime[:3]), shown)))
     if active is not None and skse.needs_bees(runtime):
         from .loadcheck import extended_header_problem
         plugins = {name: path for name, path in winning_plugins(

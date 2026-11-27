@@ -31,6 +31,8 @@ import re
 import struct
 from dataclasses import dataclass
 
+from ._i18n import translate
+
 DLL_DIR = "skse/plugins/"
 
 # SKSEPluginVersionData.versionIndependence
@@ -470,7 +472,8 @@ def verdict(a, b, runtime):
         if ba and bb and ba != bb:
             old, new = (a, b) if ba < bb else (b, a)
             return old, new, "skse_version", (
-                "{}: {}'s copy is build {}, {}'s is {}".format(
+                translate("Skse", "{}: {}'s copy is build {}, {}'s is {}"
+                          ).format(
                     os.path.basename(rel), new.name, _dotted(max(ba, bb)),
                     old.name, _dotted(min(ba, bb))))
     return None
@@ -481,5 +484,6 @@ def _dotted(version) -> str:
 
 
 def _runtime_detail(rel, good, bad, runtime) -> str:
-    return "{}: {}'s copy loads on game version {}, {}'s does not".format(
+    return translate("Skse", "{}: {}'s copy loads on game version {}, "
+                     "{}'s does not").format(
         os.path.basename(rel), good.name, _dotted(runtime[:3]), bad.name)

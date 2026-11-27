@@ -8,6 +8,8 @@ user chose to put it.
 
 from __future__ import annotations
 
+from ._i18n import translate
+
 SETTING = "nexus_api_key"
 OWNER = "MO2 DAG Sorter"
 
@@ -25,8 +27,9 @@ def masked(key: str) -> str:
     if not key:
         return ""
     if len(key) <= TAIL * 2:
-        return "{} characters".format(len(key))
-    return "{} characters, ending {}".format(len(key), key[-TAIL:])
+        return translate("Keys", "%n characters", None, len(key))
+    return translate("Keys", "%n characters, ending {}", None,
+                     len(key)).format(key[-TAIL:])
 
 
 def reason(exc: Exception) -> str:
@@ -38,11 +41,13 @@ def reason(exc: Exception) -> str:
     """
     code = getattr(exc, "code", None)
     if code == 401:
-        return "Nexus rejected it (401). Check it was copied in full."
+        return translate("Keys", "Nexus rejected it (401). Check it was "
+                         "copied in full.")
     if code == 403:
-        return "Nexus refused it (403)."
+        return translate("Keys", "Nexus refused it (403).")
     if code == 429:
-        return "too many requests for now (429) - wait and try again."
+        return translate("Keys", "too many requests for now (429) - wait "
+                         "and try again.")
     if code:
-        return "Nexus answered {}.".format(code)
+        return translate("Keys", "Nexus answered {}.").format(code)
     return str(exc) or exc.__class__.__name__

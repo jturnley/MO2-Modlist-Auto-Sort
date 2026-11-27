@@ -14,21 +14,25 @@ from PyQt6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox,
                              QLabel, QListWidget, QListWidgetItem,
                              QVBoxLayout)
 
+from ._i18n import translate
+
 
 class RestoreDialog(QDialog):
     """Returns the chosen :class:`backups.Backup` in :attr:`chosen`."""
 
     def __init__(self, found, current_mods: int, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Restore a previous mod list")
+        self.setWindowTitle(translate("RestoreDialog",
+                                      "Restore a previous mod list"))
         self.resize(620, 420)
         self.chosen = None
         self._found = list(found)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
-            "The list in use now holds {} mods. Pick the version to go back "
-            "to - the newest is at the top.".format(current_mods)))
+        layout.addWidget(QLabel(translate(
+            "RestoreDialog", "The list in use now holds %n mods. Pick the "
+            "version to go back to - the newest is at the top.", None,
+            current_mods)))
 
         self.list = QListWidget(self)
         self.list.setSelectionMode(
@@ -40,14 +44,15 @@ class RestoreDialog(QDialog):
         self.list.itemDoubleClicked.connect(lambda _item: self.accept())
         layout.addWidget(self.list)
 
-        layout.addWidget(QLabel(
-            "Restoring saves the current list first, so this can be undone "
-            "as well."))
+        layout.addWidget(QLabel(translate(
+            "RestoreDialog", "Restoring saves the current list first, so "
+            "this can be undone as well.")))
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel, self)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Restore")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+            translate("RestoreDialog", "Restore"))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

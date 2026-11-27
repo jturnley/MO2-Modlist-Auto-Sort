@@ -12,18 +12,54 @@ import json
 import os
 
 import mobase
-from PyQt6.QtCore import QCoreApplication
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from . import (backups, category_ui, context_menu, dag,
                decisions as decisions_mod,
                incremental, modlist, nexus, nexus_bridge, pipeline,
                key_ui, launchcheck, loadcheck, nexus_api, resolve_ui,
-               restore_ui, skse, slots as slots_mod, stacks, vault_key)
+               restore_ui, scan, skse, slots as slots_mod, stacks, vault_key)
+from . import _i18n, install_action, install_ui
+from ._i18n import QT_TRANSLATE_NOOP, translate
 
-VERSION = mobase.VersionInfo(0, 10, 8, mobase.ReleaseType.BETA)
+import contextlib
+import time
+
+
+@contextlib.contextmanager
+def busy():
+    """A wait cursor while the sorter works, so MO2 does not look hung.
+
+    Taken down before any dialog appears - callers wrap only the work.
+    """
+    try:
+        from PyQt6.QtCore import Qt
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        shown = True
+    except Exception:
+        shown = False
+    try:
+        yield
+    finally:
+        if shown:
+            QApplication.restoreOverrideCursor()
+
+VERSION = mobase.VersionInfo(0, 11, 0, mobase.ReleaseType.BETA)
 MAX_LISTED = 30
 BREAK = chr(10)
+
+# Every string here is translated in the "DagSorter" context, written out at
+# each call so pylupdate6 can find it. (self.tr would file the strings under
+# each class's own name, and they would never be found at run time.)
+
+# The kinds winners.py reports, as shown in the details list. The keys are
+# what winners.py matches on, so only the label is translated.
+KINDS = {
+    "plugins": QT_TRANSLATE_NOOP("DagSorter", "plugins"),
+    "archives": QT_TRANSLATE_NOOP("DagSorter", "archives"),
+    "SKSE plugins": QT_TRANSLATE_NOOP("DagSorter", "SKSE plugins"),
+    "scripts": QT_TRANSLATE_NOOP("DagSorter", "scripts"),
+}
 
 
 class DagSorterTool(mobase.IPluginTool):
@@ -34,15 +70,33 @@ class DagSorterTool(mobase.IPluginTool):
     # -- identity --------------------------------------------------------
     def init(self, organizer: mobase.IOrganizer) -> bool:
         self._organizer = organizer
+        try:
+            _i18n.install(organizer)
+        except Exception:
+            pass                # untranslated is fine; not loading is not
         # A load order is built one mod at a time, so the questions the
         # sorter cannot answer are best asked one mod at a time too. This is
         # the whole difference between two questions after an install and
         # thirty-three in one sitting months later.
+        # Always hooked: whether anything happens is the on_install setting,
+        # read at the moment of each install, so changing it from the Tools
+        # menu takes effect without a restart.
         try:
-            if organizer.pluginSetting(self.name(), "sort_on_install"):
-                organizer.modList().onModInstalled(self._on_installed)
+            organizer.modList().onModInstalled(self._on_installed)
         except (AttributeError, RuntimeError, TypeError):
             pass                       # an MO2 build without the callback
+        # The file lists kept between sorts (scan.SESSION) are dropped when
+        # something may have changed what is in the mod folders: a mod
+        # removed, or any program run through MO2 - BodySlide, Nemesis and
+        # DynDOLOD all write into mod folders.
+        try:
+            organizer.modList().onModRemoved(self._on_removed)
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            organizer.onFinishedRun(self._on_finished_run)
+        except (AttributeError, RuntimeError, TypeError):
+            pass
         try:
             organizer.onUserInterfaceInitialized(self._ui_ready)
         except (AttributeError, RuntimeError, TypeError):
@@ -93,9 +147,11 @@ class DagSorterTool(mobase.IPluginTool):
             self._organizer.pluginDataPath(), "user_rules.json"))
 
         menu.addSeparator()
-        label = ("Auto-sort this mod" if len(names) == 1
-                 else "Auto-sort these {} mods".format(len(names)))
-        action = QAction(self.tr(label), menu)
+        label = (translate("DagSorter", "Auto-sort this mod")
+                 if len(names) == 1 else
+                 translate("DagSorter", "Auto-sort these %n mods", None,
+                           len(names)))
+        action = QAction(label, menu)
         action.triggered.connect(
             lambda _checked=False, picked=list(names): self._sort_these(picked))
         menu.addAction(action)
@@ -114,16 +170,30 @@ class DagSorterTool(mobase.IPluginTool):
             # Both sides stay on the menu even when one is already set: the
             # point of offering the opposite is to be able to change one's
             # mind, and a hidden option cannot be changed.
+            # One whole sentence per side: "above"/"below" dropped into a
+            # template cannot be translated, and word order differs.
             if len(picked) == 1:
-                label = "Freeze order - keep directly {} {}".format(
-                    side, target)
+                label = (translate("DagSorter",
+                                   "Freeze order - keep directly above {}")
+                         if side == "above" else
+                         translate("DagSorter",
+                                   "Freeze order - keep directly below {}")
+                         ).format(target)
+            elif side == "above":
+                label = translate(
+                    "DagSorter", "Freeze order - keep these %n mods "
+                    "together, directly above {}", None,
+                    len(picked)).format(target)
             else:
-                label = ("Freeze order - keep these {} mods together, "
-                         "directly {} {}").format(len(picked), side, target)
+                label = translate(
+                    "DagSorter", "Freeze order - keep these %n mods "
+                    "together, directly below {}", None,
+                    len(picked)).format(target)
             done = stacks.already_set(rules, picked, target, side)
             if done:
-                label += "   (already set)"
-            action = QAction(self.tr(label), menu)
+                label = translate("DagSorter", "{}   (already set)").format(
+                    label)
+            action = QAction(label, menu)
             action.setEnabled(not done)
             action.triggered.connect(
                 lambda _checked=False, mods=list(picked), to=target, how=side:
@@ -134,11 +204,14 @@ class DagSorterTool(mobase.IPluginTool):
         if held:
             if len(picked) == 1:
                 at, side = rules.frozen_to(picked[0])
-                label = "Unfreeze from {} ({})".format(at, side)
+                label = (translate("DagSorter", "Unfreeze from {} (above)")
+                         if side == "above" else
+                         translate("DagSorter", "Unfreeze from {} (below)")
+                         ).format(at)
             else:
-                label = "Unfreeze {} of these {} mods".format(
-                    len(held), len(picked))
-            action = QAction(self.tr(label), menu)
+                label = translate("DagSorter", "Unfreeze %n of these {} mods",
+                                  None, len(held)).format(len(picked))
+            action = QAction(label, menu)
             action.triggered.connect(
                 lambda _checked=False, mods=list(held): self._unfreeze(mods))
             menu.addAction(action)
@@ -150,7 +223,7 @@ class DagSorterTool(mobase.IPluginTool):
         return "MO2-DAG-Sorter"
 
     def description(self) -> str:
-        return self.tr("Sorts the left pane by functional tier and override "
+        return translate("DagSorter", "Sorts the left pane by functional tier and override "
                        "conflicts, using a topological sort.")
 
     def version(self) -> mobase.VersionInfo:
@@ -163,45 +236,43 @@ class DagSorterTool(mobase.IPluginTool):
         return [
             mobase.PluginSetting(
                 "nexus_api_key",
-                self.tr("Optional. Leave blank: MO2's own Nexus key is used, "
+                translate("DagSorter", "Optional. Leave blank: MO2's own Nexus key is used, "
                         "so there is no need to enter a second copy of it. "
                         "Set one only to bypass MO2's connection - and set "
                         "it from Tools -> Nexus API Key rather than here, "
                         "which can test it before you rely on it."), ""),
             mobase.PluginSetting(
-                "sort_on_install",
-                self.tr("Place each newly installed mod straight away, and "
-                        "ask about its conflicts then rather than saving "
-                        "them all up for a full sort."), True),
+                install_action.SETTING,
+                translate("DagSorter", "What to do when a mod is installed: "
+                          "ask, nothing, enable or enable_sort. Easier to "
+                          "change from Tools -> New Mod Options."),
+                install_action.DEFAULT),
             mobase.PluginSetting(
                 "game_domain",
-                self.tr("Nexus game domain used for category lookups."),
+                translate("DagSorter", "Nexus game domain used for category lookups."),
                 "skyrimspecialedition"),
             mobase.PluginSetting(
                 "check_skse_plugins",
-                self.tr("Before SKSE or the game is launched, and after a "
+                translate("DagSorter", "Before SKSE or the game is launched, and after a "
                         "mod is installed, check that its SKSE plugins will "
                         "load - game version, SKSE version, Address Library "
                         "- and warn if not."), True),
             mobase.PluginSetting(
                 "skse_check_ignored",
-                self.tr("SKSE problems you chose not to be warned about "
+                translate("DagSorter", "SKSE problems you chose not to be warned about "
                         "again. Clear it to be warned about them again."),
                 ""),
         ]
 
     def displayName(self) -> str:
-        return self.tr("Auto-Sort Left Pane")
+        return translate("DagSorter", "Auto-Sort Left Pane")
 
     def tooltip(self) -> str:
-        return self.tr("Reorder the left pane with a topological sort")
+        return translate("DagSorter", "Reorder the left pane with a topological sort")
 
     def icon(self):
         from PyQt6.QtGui import QIcon
         return QIcon()
-
-    def tr(self, text: str) -> str:
-        return QCoreApplication.translate("DagSorter", text)
 
     def _nexus(self):
         """The shared Nexus client, built once per session.
@@ -247,11 +318,16 @@ class DagSorterTool(mobase.IPluginTool):
 
         rules = decisions_mod.Decisions(
             os.path.join(cache_dir, "user_rules.json"))
+        # The full sort walks every mod folder afresh: it is the one run to
+        # get everything right. The re-sorts below, after a dialog, reuse
+        # what this one just read.
         try:
-            result = pipeline.sort_profile(
-                root, profile, api_key=override_key or None, domain=domain,
-                cache_dir=cache_dir, resolver=resolver, decisions=rules, client=self._nexus(),
-                game_dir=self._game_dir())
+            with busy():
+                result = pipeline.sort_profile(
+                    root, profile, api_key=override_key or None,
+                    domain=domain, cache_dir=cache_dir, resolver=resolver,
+                    decisions=rules, client=self._nexus(),
+                    game_dir=self._game_dir())
         except dag.CycleError as exc:
             self._show_cycle(parent, exc)
             return
@@ -266,11 +342,13 @@ class DagSorterTool(mobase.IPluginTool):
             if (dialog.exec() == category_ui.CategoryDialog.DialogCode.Accepted
                     and rules.categories):
                 try:
-                    result = pipeline.sort_profile(
-                        root, profile, api_key=override_key or None,
-                        domain=domain, cache_dir=cache_dir,
-                        resolver=None, decisions=rules, client=self._nexus(),
-                        game_dir=self._game_dir())
+                    with busy():
+                        result = pipeline.sort_profile(
+                            root, profile, api_key=override_key or None,
+                            domain=domain, cache_dir=cache_dir,
+                            resolver=None, decisions=rules,
+                            client=self._nexus(), game_dir=self._game_dir(),
+                            reuse_scan=True)
                 except dag.CycleError as exc:
                     self._show_cycle(parent, exc)
                     return
@@ -285,19 +363,21 @@ class DagSorterTool(mobase.IPluginTool):
                 return
             if dialog.apply_to_decisions():
                 try:
-                    result = pipeline.sort_profile(
-                        root, profile, api_key=override_key or None,
-                        domain=domain, cache_dir=cache_dir,
-                        resolver=None, decisions=rules, client=self._nexus(),
-                        game_dir=self._game_dir())
+                    with busy():
+                        result = pipeline.sort_profile(
+                            root, profile, api_key=override_key or None,
+                            domain=domain, cache_dir=cache_dir,
+                            resolver=None, decisions=rules,
+                            client=self._nexus(), game_dir=self._game_dir(),
+                            reuse_scan=True)
                 except dag.CycleError as exc:
                     self._show_cycle(parent, exc)
                     return
 
         if not result.changed:
             QMessageBox.information(
-                parent, self.tr("Auto-Sort Left Pane"),
-                self.tr("The list is already in order.\n\n") + result.report)
+                parent, translate("DagSorter", "Auto-Sort Left Pane"),
+                translate("DagSorter", "The list is already in order.\n\n") + result.report)
             return
 
         self._warn_duplicates(parent, result.duplicates)
@@ -307,18 +387,93 @@ class DagSorterTool(mobase.IPluginTool):
         backup = pipeline.apply_result(root, profile, result)
         self._organizer.refresh()
         QMessageBox.information(
-            parent, self.tr("Auto-Sort Left Pane"),
-            self.tr("Moved {} mods.\n\nPrevious list saved as:\n{}").format(
-                len(result.moved), backup or self.tr("(no backup written)")))
+            parent, translate("DagSorter", "Auto-Sort Left Pane"),
+            translate("DagSorter",
+                      "Moved %n mods.\n\nPrevious list saved as:\n{}", None,
+                      len(result.moved)).format(
+                backup or translate("DagSorter", "(no backup written)")))
 
     # -- one mod at a time -----------------------------------------------
     def _on_installed(self, mod) -> None:
-        """Slot the mod that was just installed into the existing order."""
+        """Enable and place a newly installed mod, as the user chose.
+
+        MO2 installs a mod switched off at the bottom of the list. The
+        on_install setting says what follows - nothing, switch it on, or
+        switch it on and slot it into the existing order - and "ask", the
+        default, offers those three with a box to make the answer stick.
+        """
         try:
             name = mod.name()
+            path = mod.absolutePath()
         except (AttributeError, RuntimeError):
             return
+        scan.SESSION.forget(path)          # new files, whatever happens next
         parent = QApplication.activeWindow()
+        action = install_action.normalise(self._organizer.pluginSetting(
+            self.name(), install_action.SETTING))
+        active = self._is_active(name)
+        if action == install_action.ASK:
+            action, remember = install_ui.ask(name, active, parent)
+            if remember:
+                self._organizer.setPluginSetting(
+                    self.name(), install_action.SETTING, action)
+        enable, sort = install_action.steps(action, active)
+        if enable and not self._enable(name):
+            return                         # MO2 would not switch it on
+        if sort:
+            self._place_installed(name, parent, switched_on=enable)
+
+    def _on_removed(self, name) -> None:
+        try:
+            scan.SESSION.forget(os.path.join(
+                self._organizer.modsPath(), str(name)))
+        except (AttributeError, RuntimeError, TypeError):
+            scan.SESSION.forget()
+
+    def _on_finished_run(self, *_args) -> None:
+        scan.SESSION.forget()
+
+    def _is_active(self, name: str) -> bool:
+        try:
+            state = self._organizer.modList().state(name)
+            try:
+                return bool(state & mobase.ModState.ACTIVE)
+            except TypeError:
+                return bool(int(state) & int(mobase.ModState.ACTIVE))
+        except (AttributeError, RuntimeError, TypeError):
+            return False
+
+    def _enable(self, name: str) -> bool:
+        """Switch a mod on, and give MO2 a moment to write that down.
+
+        MO2 writes modlist.txt a short while after a change rather than at
+        once, and placing the mod means rewriting that file. Writing before
+        MO2 has would race it: whichever wrote last would win, and MO2's
+        copy has the mod in its old place. So this waits - up to a few
+        seconds, keeping MO2 responsive - until the file shows the mod
+        switched on. If it never does, the placement treats the mod as on
+        regardless, so it is not switched back off.
+        """
+        try:
+            self._organizer.modList().setActive(name, True)
+        except (AttributeError, RuntimeError, TypeError):
+            return False
+        from PyQt6.QtCore import QEventLoop
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            QApplication.processEvents(
+                QEventLoop.ProcessEventsFlag.AllEvents, 50)
+            try:
+                nodes, _header = modlist.read_modlist(self._list_path())
+            except OSError:
+                nodes = []
+            if any(n.name == name and n.enabled for n in nodes):
+                break
+            time.sleep(0.05)
+        return True
+
+    def _place_installed(self, name: str, parent, switched_on=False) -> None:
+        """Slot one mod into the existing order, asking only about it."""
         root = self._instance_root()
         profile = self._organizer.profile().name()
         domain = str(self._organizer.pluginSetting(
@@ -326,12 +481,15 @@ class DagSorterTool(mobase.IPluginTool):
         cache_dir = self._organizer.pluginDataPath()
         rules = decisions_mod.Decisions(
             os.path.join(cache_dir, "user_rules.json"))
+        forced = [name] if switched_on else []
 
         try:
-            result = pipeline.sort_profile(
-                root, profile, api_key=None, domain=domain,
-                cache_dir=cache_dir, resolver=None, decisions=rules, client=self._nexus(),
-                game_dir=self._game_dir())
+            with busy():
+                result = pipeline.sort_profile(
+                    root, profile, api_key=None, domain=domain,
+                    cache_dir=cache_dir, resolver=None, decisions=rules,
+                    client=self._nexus(), game_dir=self._game_dir(),
+                    reuse_scan=True, enabled=forced)
         except (dag.CycleError, OSError):
             return                     # never block an install
 
@@ -342,11 +500,13 @@ class DagSorterTool(mobase.IPluginTool):
             if dialog.exec() == resolve_ui.ResolveDialog.DialogCode.Accepted:
                 if dialog.apply_to_decisions():
                     try:
-                        result = pipeline.sort_profile(
-                            root, profile, api_key=None, domain=domain,
-                            cache_dir=cache_dir, resolver=None,
-                            decisions=rules, client=self._nexus(),
-                            game_dir=self._game_dir())
+                        with busy():
+                            result = pipeline.sort_profile(
+                                root, profile, api_key=None, domain=domain,
+                                cache_dir=cache_dir, resolver=None,
+                                decisions=rules, client=self._nexus(),
+                                game_dir=self._game_dir(), reuse_scan=True,
+                                enabled=forced)
                     except (dag.CycleError, OSError):
                         return
 
@@ -358,6 +518,12 @@ class DagSorterTool(mobase.IPluginTool):
 
         current, header = modlist.read_modlist(
             os.path.join(root, "profiles", profile, "modlist.txt"))
+        if switched_on:
+            # Written as on even if MO2 has not saved that yet: rewriting
+            # the file with the mod off would switch it back off.
+            for node in current:
+                if node.name == name and node.prefix == "-":
+                    node.prefix = "+"
         placed = incremental.place_one(current, result.nodes, name,
                                          result.edges)
         was = [n.name for n in current]
@@ -368,8 +534,8 @@ class DagSorterTool(mobase.IPluginTool):
             placed, header, label="install-" + name)
         self._organizer.refresh()
         QMessageBox.information(
-            parent, self.tr("Auto-Sort Left Pane"),
-            self.tr("Placed {} at position {} of {}.").format(
+            parent, translate("DagSorter", "Auto-Sort Left Pane"),
+            translate("DagSorter", "Placed {} at position {} of {}.").format(
                 name, [n.name for n in placed].index(name) + 1, len(placed)))
 
 
@@ -422,54 +588,88 @@ class DagSorterTool(mobase.IPluginTool):
         rules.save()
 
         if len(picked) == 1:
-            body = self.tr(
-                "{} will be kept directly {} {}.\n\nAny other mods "
-                "frozen to the same side of {} sort among themselves as "
-                "usual, and the whole stack stays there.").format(
-                    picked[0], side, target, target)
+            body = (translate(
+                "DagSorter",
+                "{0} will be kept directly above {1}.\n\nAny other mods "
+                "frozen to the same side of {1} sort among themselves as "
+                "usual, and the whole stack stays there.")
+                if side == "above" else translate(
+                "DagSorter",
+                "{0} will be kept directly below {1}.\n\nAny other mods "
+                "frozen to the same side of {1} sort among themselves as "
+                "usual, and the whole stack stays there.")
+            ).format(picked[0], target)
         else:
-            body = self.tr(
-                "These {} mods will be kept together, directly {} {}, in "
-                "the order they are in now:\n\n{}\n\nThey move as one "
-                "block. Sorting will not put anything between them.").format(
-                    len(picked), side, target,
-                    "\n".join("    " + m for m in picked))
-        QMessageBox.information(parent, self.tr("Freeze order"), body)
+            body = (translate(
+                "DagSorter",
+                "These %n mods will be kept together, directly above {0}, "
+                "in the order they are in now:\n\n{1}\n\nThey move as one "
+                "block. Sorting will not put anything between them.",
+                None, len(picked))
+                if side == "above" else translate(
+                "DagSorter",
+                "These %n mods will be kept together, directly below {0}, "
+                "in the order they are in now:\n\n{1}\n\nThey move as one "
+                "block. Sorting will not put anything between them.",
+                None, len(picked))
+            ).format(target, "\n".join("    " + m for m in picked))
+        QMessageBox.information(parent, translate("DagSorter", "Freeze order"),
+                                body)
 
     def _explain_loop(self, parent, rules, mod, target) -> None:
         chain = rules.freeze_chain(target)
-        rest = ""
+        upto = []
         if chain and chain[0] != mod:
             upto = chain[1:chain.index(mod) + 1] if mod in chain else chain[1:]
-            if upto:
-                rest = ", which is held next to " + " then ".join(upto)
-        QMessageBox.warning(
-            parent, self.tr("Freeze order"),
-            self.tr("{} cannot be frozen to {}.\n\n{} is already held next "
-                    "to {}{}, so this would form a loop: each mod would have "
-                    "to sit beside the other, and there is no arrangement "
-                    "that does both.\n\nUnfreeze one of them first. Nothing "
-                    "has been changed.").format(
-                        mod, target, target, chain[0] if chain else mod, rest))
+        first = chain[0] if chain else mod
+        if upto:
+            text = translate(
+                "DagSorter",
+                "{0} cannot be frozen to {1}.\n\n{1} is already held next "
+                "to {2}, which is held next to {3}, so this would form a "
+                "loop: each mod would have to sit beside the other, and "
+                "there is no arrangement that does both.\n\nUnfreeze one "
+                "of them first. Nothing has been changed.").format(
+                    mod, target, first, " -> ".join(upto))
+        else:
+            text = translate(
+                "DagSorter",
+                "{0} cannot be frozen to {1}.\n\n{1} is already held next "
+                "to {2}, so this would form a loop: each mod would have to "
+                "sit beside the other, and there is no arrangement that "
+                "does both.\n\nUnfreeze one of them first. Nothing has been "
+                "changed.").format(mod, target, first)
+        QMessageBox.warning(parent, translate("DagSorter", "Freeze order"),
+                            text)
 
     def _confirm_replace(self, parent, replacing) -> bool:
         if len(replacing) == 1:
             mod, (at, how) = replacing[0]
-            text = self.tr(
-                "{} is already frozen directly {} {}.\n\nReplacing it will "
-                "discard that earlier choice. A mod can only be held on one "
-                "side of one mod.\n\nReplace it?").format(mod, how, at)
+            text = (translate(
+                "DagSorter",
+                "{} is already frozen directly above {}.\n\nReplacing it "
+                "will discard that earlier choice. A mod can only be held on "
+                "one side of one mod.\n\nReplace it?")
+                if how == "above" else translate(
+                "DagSorter",
+                "{} is already frozen directly below {}.\n\nReplacing it "
+                "will discard that earlier choice. A mod can only be held on "
+                "one side of one mod.\n\nReplace it?")).format(mod, at)
         else:
-            text = self.tr(
-                "{} of the selected mods are already frozen somewhere "
+            text = translate(
+                "DagSorter",
+                "%n of the selected mods are already frozen somewhere "
                 "else:\n\n{}\n\nGoing ahead will discard those earlier "
                 "choices. A mod can only be held on one side of one "
-                "mod.\n\nReplace them?").format(
-                    len(replacing),
-                    "\n".join("    {} - directly {} {}".format(mod, how, at)
-                               for mod, (at, how) in replacing))
+                "mod.\n\nReplace them?", None, len(replacing)).format(
+                    "\n".join(
+                        (translate("DagSorter", "    {} - directly above {}")
+                         if how == "above" else
+                         translate("DagSorter", "    {} - directly below {}")
+                         ).format(mod, at)
+                        for mod, (at, how) in replacing))
         return QMessageBox.question(
-            parent, self.tr("Freeze order"), text,
+            parent, translate("DagSorter", "Freeze order"), text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         ) == QMessageBox.StandardButton.Yes
@@ -481,8 +681,10 @@ class DagSorterTool(mobase.IPluginTool):
         much the most expensive thing a menu click can do.
         """
         try:
-            result = pipeline.sort_profile(
+            with busy():
+                result = pipeline.sort_profile(
                 self._instance_root(), self._organizer.profile().name(),
+                reuse_scan=True,
                 api_key=None,
                 domain=str(self._organizer.pluginSetting(
                     self.name(), "game_domain") or "skyrimspecialedition"),
@@ -491,7 +693,7 @@ class DagSorterTool(mobase.IPluginTool):
                 game_dir=self._game_dir())
         except (dag.CycleError, OSError) as exc:
             QMessageBox.warning(QApplication.activeWindow(),
-                                self.tr("Freeze order"), str(exc))
+                                translate("DagSorter", "Freeze order"), str(exc))
             return None
         self._order = [n for n in result.nodes
                        if not n.is_separator and not n.is_unmanaged]
@@ -503,14 +705,25 @@ class DagSorterTool(mobase.IPluginTool):
         for mod, _to, edges in blocked:
             reasons.extend(dag.blocker_text(self._order, e, mod)
                            for e in edges)
-        who = (blocked[0][0] if len(blocked) == 1
-               else "{} of the selected mods".format(len(blocked)))
+        if len(blocked) == 1:
+            headline = (translate("DagSorter",
+                                  "{} cannot be kept directly above {}.")
+                        if side == "above" else
+                        translate("DagSorter",
+                                  "{} cannot be kept directly below {}.")
+                        ).format(blocked[0][0], target)
+        else:
+            headline = (translate(
+                "DagSorter", "%n of the selected mods cannot be kept "
+                "directly above {}.", None, len(blocked))
+                if side == "above" else translate(
+                "DagSorter", "%n of the selected mods cannot be kept "
+                "directly below {}.", None, len(blocked))).format(target)
         box = QMessageBox(parent)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(self.tr("Freeze order"))
-        box.setText(self.tr("{} cannot be kept directly {} {}.").format(
-            who, side, target))
-        box.setInformativeText(self.tr(
+        box.setWindowTitle(translate("DagSorter", "Freeze order"))
+        box.setText(headline)
+        box.setInformativeText(translate("DagSorter", 
             "Something has to load in between, and moving them there would "
             "break it. Nothing has been changed.\n\n{}").format(
                 "\n\n".join(reasons[:3])))
@@ -527,13 +740,17 @@ class DagSorterTool(mobase.IPluginTool):
         rules.save()
         if len(was) == 1:
             mod, (at, how) = was[0]
-            text = self.tr("{} is no longer held {} {}.").format(mod, how, at)
+            text = (translate("DagSorter", "{} is no longer held above {}.")
+                    if how == "above" else
+                    translate("DagSorter", "{} is no longer held below {}.")
+                    ).format(mod, at)
         else:
-            text = self.tr("{} mods are no longer held in place:\n\n{}"
-                           ).format(len(was),
-                                    "\n".join("    " + m for m, _h in was))
+            text = translate("DagSorter",
+                             "%n mods are no longer held in place:\n\n{}",
+                             None, len(was)).format(
+                                 "\n".join("    " + m for m, _h in was))
         QMessageBox.information(QApplication.activeWindow(),
-                                self.tr("Freeze order"), text)
+                                translate("DagSorter", "Freeze order"), text)
 
     def _sort_these(self, names) -> None:
         """Place the selected mods, leaving the rest of the list alone."""
@@ -553,14 +770,18 @@ class DagSorterTool(mobase.IPluginTool):
         # spend hundreds of requests to answer a question about three.
         client = self._nexus()
         try:
-            with nexus_api.refreshing(client):
+            # Only the selected mods' folders are re-read: the user
+            # pointed at them, and the rest has not changed since.
+            for picked in names:
+                scan.SESSION.forget(os.path.join(root, "mods", picked))
+            with busy(), nexus_api.refreshing(client):
                 result = pipeline.sort_profile(
                     root, profile, api_key=None, domain=domain,
                     cache_dir=cache_dir, resolver=None, decisions=rules,
                     client=client, refresh=names,
-                    game_dir=self._game_dir())
+                    game_dir=self._game_dir(), reuse_scan=True)
         except (dag.CycleError, OSError) as exc:
-            QMessageBox.warning(parent, self.tr("Auto-sort"), str(exc))
+            QMessageBox.warning(parent, translate("DagSorter", "Auto-sort"), str(exc))
             return
 
         asked = [edge for name in names
@@ -573,11 +794,12 @@ class DagSorterTool(mobase.IPluginTool):
                     try:
                         # No refresh this time: the run above already
                         # fetched these, and the answers are now in cache.
-                        result = pipeline.sort_profile(
-                            root, profile, api_key=None, domain=domain,
-                            cache_dir=cache_dir, resolver=None,
-                            decisions=rules, client=client,
-                            game_dir=self._game_dir())
+                        with busy():
+                            result = pipeline.sort_profile(
+                                root, profile, api_key=None, domain=domain,
+                                cache_dir=cache_dir, resolver=None,
+                                decisions=rules, client=client,
+                                game_dir=self._game_dir(), reuse_scan=True)
                     except (dag.CycleError, OSError):
                         return
 
@@ -589,15 +811,15 @@ class DagSorterTool(mobase.IPluginTool):
                                             result.edges)
         after = [n.name for n in current]
         if after == before:
-            QMessageBox.information(parent, self.tr("Auto-sort"),
-                                    self.tr("Already in the right place."))
+            QMessageBox.information(parent, translate("DagSorter", "Auto-sort"),
+                                    translate("DagSorter", "Already in the right place."))
             return
         modlist.write_modlist(path, current, header,
                               label="auto-sort-" + names[0])
         self._organizer.refresh()
         QMessageBox.information(
-            parent, self.tr("Auto-sort"),
-            self.tr("Placed {}.\n\n{}").format(
+            parent, translate("DagSorter", "Auto-sort"),
+            translate("DagSorter", "Placed {}.\n\n{}").format(
                 ", ".join(names),
                 "\n".join("{}: {} -> {}".format(n, before.index(n) + 1,
                                                  after.index(n) + 1)
@@ -618,13 +840,13 @@ class DagSorterTool(mobase.IPluginTool):
             lines.append(group.headline)
             lines.extend("    " + path for path in group.sample)
             if group.files > len(group.sample):
-                lines.append("    ... and {} more".format(
-                    group.files - len(group.sample)))
+                lines.append(translate("DagSorter", "    ... and %n more", None,
+                                       group.files - len(group.sample)))
             lines.append("")
         box = QMessageBox(parent)
         box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle(self.tr("Duplicate mods"))
-        box.setText(self.tr(
+        box.setWindowTitle(translate("DagSorter", "Duplicate mods"))
+        box.setText(translate("DagSorter", 
             "These mods replicate exactly the same files. You may want to "
             "check them to see if they are intended to be this way."))
         box.setInformativeText("\n".join(g.headline for g in found))
@@ -636,78 +858,95 @@ class DagSorterTool(mobase.IPluginTool):
         lines = ["{} -> {}   {}".format(old, new, name)
                  for name, old, new in result.moved[:MAX_LISTED]]
         if len(result.moved) > MAX_LISTED:
-            lines.append("... and {} more".format(
-                len(result.moved) - MAX_LISTED))
+            lines.append(translate("DagSorter", "... and %n more", None,
+                                   len(result.moved) - MAX_LISTED))
         if result.unfrozen:
             lines.append("")
-            lines.append("FREEZES NOT HONOURED - a real dependency came "
-                         "first:")
-            lines += ["  {} could not be kept directly above {}".format(a, b)
+            lines.append(translate("DagSorter",
+                                   "FREEZES NOT HONOURED - a real dependency "
+                                   "came first:"))
+            lines += [translate("DagSorter",
+                                "  {} could not be kept directly above {}"
+                                ).format(a, b)
                       for a, b in result.unfrozen]
         if result.shadowed:
             lines.append("")
-            lines.append("FULLY OVERRIDDEN - these contribute nothing in the "
-                         "new order:")
+            lines.append(translate("DagSorter",
+                                   "FULLY OVERRIDDEN - these contribute "
+                                   "nothing in the new order:"))
             lines += ["  " + item.headline for item in result.shadowed]
         change = getattr(result, "slots", None)
         if change is not None and change.became_full:
             lines.append("")
-            lines.append("NOW FULL-SIZE - the winning copy of these plugins "
-                         "is no longer ESL-flagged ({} -> {} full slots):"
-                         .format(change.before, change.after))
-            lines += ["  {} - now {}'s copy, was {}'s".format(p, now, was)
+            lines.append(translate(
+                "DagSorter", "NOW FULL-SIZE - the winning copy of these "
+                "plugins is no longer ESL-flagged ({} -> {} full slots):"
+            ).format(change.before, change.after))
+            lines += [translate("DagSorter",
+                                "  {} - now the copy from {}, was from {}"
+                                ).format(p, loadcheck.shown(now),
+                                         loadcheck.shown(was))
                       for p, now, was in change.became_full]
         handed = getattr(result, "winners", None)
         if handed:
             lines.append("")
-            lines.append("CHANGES HANDS - a different mod's copy of these "
-                         "files wins in the new order:")
+            lines.append(translate("DagSorter",
+                                   "CHANGES HANDS - a different mod's copy "
+                                   "of these files wins in the new order:"))
             for kind in ("plugins", "archives", "SKSE plugins", "scripts"):
                 changes = handed.of(kind)
                 if not changes:
                     continue
-                lines.append("  {} ({}):".format(kind, len(changes)))
-                lines += ["    {} - now {}, was {}".format(path, now, was)
+                lines.append("  {} ({}):".format(
+                    translate("DagSorter", KINDS[kind]), len(changes)))
+                lines += [translate("DagSorter", "    {} - now {}, was {}"
+                                    ).format(path, now, was)
                           for _k, path, now, was in changes[:MAX_LISTED]]
                 if len(changes) > MAX_LISTED:
-                    lines.append("    ... and {} more".format(
-                        len(changes) - MAX_LISTED))
+                    lines.append(translate("DagSorter", "    ... and %n more",
+                                           None, len(changes) - MAX_LISTED))
         if result.problems:
             lines.append("")
-            lines.append("WILL NOT LOAD, whatever the order - reported, "
-                         "nothing changed:")
+            lines.append(translate("DagSorter",
+                                   "WILL NOT LOAD, whatever the order - "
+                                   "reported, nothing changed:"))
             lines += ["  " + item.headline for item in result.problems]
         if result.dropped:
             lines.append("")
-            lines.append("Conflicts settled ({}):".format(len(result.dropped)))
+            lines.append(translate("DagSorter", "Conflicts settled (%n):",
+                                   None, len(result.dropped)))
             lines += ["  {} -> {}  ({})".format(e.parent, e.child, e.reason)
                       for e in result.dropped[:MAX_LISTED]]
         box = QMessageBox(parent)
-        box.setWindowTitle(self.tr("Auto-Sort Left Pane"))
-        box.setText(self.tr("{} of {} entries would move.").format(
-            len(result.moved), len(result.nodes)))
+        box.setWindowTitle(translate("DagSorter", "Auto-Sort Left Pane"))
+        box.setText(translate("DagSorter", "%n of {} entries would move.",
+                              None, len(result.moved)).format(
+                                  len(result.nodes)))
         summary = result.report
         if result.shadowed:
-            summary += ("\n\n{} mod(s) end up fully overridden and "
-                        "contribute nothing - see Details.").format(
-                            len(result.shadowed))
+            summary += "\n\n" + translate(
+                "DagSorter", "%n mod(s) end up fully overridden and "
+                "contribute nothing - see Details.", None,
+                len(result.shadowed))
         if result.problems:
-            summary += ("\n\n{} plugin(s), archive(s) or SKSE DLL(s) will "
-                        "not load at all, whatever the order - see "
-                        "Details. Nothing has been changed about them."
-                        ).format(len(result.problems))
+            summary += "\n\n" + translate(
+                "DagSorter", "%n plugin(s), archive(s) or SKSE DLL(s) will "
+                "not load at all, whatever the order - see Details. Nothing "
+                "has been changed about them.", None, len(result.problems))
         if handed:
-            summary += ("\n\n{} - see Details.").format(
-                handed.headline[0].upper() + handed.headline[1:])
+            summary += "\n\n" + translate("DagSorter", "{} - see Details."
+                                          ).format(handed.headline[0].upper()
+                                                   + handed.headline[1:])
         if change is not None and change.changed:
-            summary += ("\n\nFull plugin slots: {} -> {} (limit {})."
-                        ).format(change.before, change.after,
-                                 slots_mod.FULL_LIMIT)
+            summary += "\n\n" + translate(
+                "DagSorter", "Full plugin slots: {} -> {} (limit {})."
+            ).format(change.before, change.after, slots_mod.FULL_LIMIT)
             if change.over:
                 box.setIcon(QMessageBox.Icon.Warning)
-                summary += (" The new order goes over the limit and the "
-                            "game will not start with it - see Details "
-                            "for the plugins that changed.")
+                summary += " " + translate(
+                    "DagSorter", "The new order goes over the limit and the "
+                    "game will not start with it - see Details for the "
+                    "plugins that changed.")
         box.setInformativeText(summary)
         box.setDetailedText("\n".join(lines))
         box.setStandardButtons(QMessageBox.StandardButton.Apply
@@ -720,9 +959,10 @@ class DagSorterTool(mobase.IPluginTool):
             e.parent, e.child, e.reason, e.detail) for e in exc.edges[:60]]
         box = QMessageBox(parent)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(self.tr("Auto-Sort Left Pane"))
-        box.setText(self.tr("Nothing was written: {} mods are in a circular "
-                            "dependency.").format(len(exc.nodes)))
+        box.setWindowTitle(translate("DagSorter", "Auto-Sort Left Pane"))
+        box.setText(translate("DagSorter", "Nothing was written: %n mods are "
+                              "in a circular dependency.", None,
+                              len(exc.nodes)))
         box.setInformativeText(", ".join(exc.nodes[:12]))
         box.setDetailedText("\n".join(detail))
         box.exec()
@@ -819,23 +1059,26 @@ class DagSorterTool(mobase.IPluginTool):
         from PyQt6.QtWidgets import QCheckBox
         box = QMessageBox(QApplication.activeWindow())
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(self.tr("SKSE plugin check"))
-        box.setText(self.tr("SKSE will not load {} of the things below.")
-                    .format(len(problems)) if len(problems) > 1 else
-                    self.tr("SKSE will not load the plugin below."))
+        box.setWindowTitle(translate("DagSorter", "SKSE plugin check"))
+        box.setText(translate("DagSorter",
+                              "SKSE will not load %n of the things below.",
+                              None, len(problems)) if len(problems) > 1 else
+                    translate("DagSorter",
+                              "SKSE will not load the plugin below."))
         shown = [p.headline for p in problems[:3]]
         if len(problems) > 3:
-            shown.append(self.tr("... and {} more - see Details.").format(
-                len(problems) - 3))
-        box.setInformativeText("\n\n".join(shown) + "\n\n" + self.tr(
+            shown.append(translate("DagSorter",
+                                   "... and %n more - see Details.", None,
+                                   len(problems) - 3))
+        box.setInformativeText("\n\n".join(shown) + "\n\n" + translate("DagSorter", 
             "The game will start without them. Nothing has been changed."))
         box.setDetailedText("\n".join(p.headline for p in problems))
-        launch = box.addButton(self.tr("Launch anyway"),
+        launch = box.addButton(translate("DagSorter", "Launch anyway"),
                                QMessageBox.ButtonRole.AcceptRole)
-        cancel = box.addButton(self.tr("Cancel launch"),
+        cancel = box.addButton(translate("DagSorter", "Cancel launch"),
                                QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(cancel)
-        remember = QCheckBox(self.tr("Don't warn me about these again"))
+        remember = QCheckBox(translate("DagSorter", "Don't warn me about these again"))
         box.setCheckBox(remember)
         box.exec()
         if remember.isChecked():
@@ -856,11 +1099,12 @@ class DagSorterTool(mobase.IPluginTool):
         if not problems:
             return
         QMessageBox.warning(
-            QApplication.activeWindow(), self.tr("SKSE plugin check"),
-            self.tr("{} was installed, but SKSE will not load its "
-                    "plugin(s):").format(mod.name()) + "\n\n"
+            QApplication.activeWindow(), translate("DagSorter", "SKSE plugin check"),
+            translate("DagSorter", "{} was installed, but SKSE will not load "
+                      "its plugin(s):", None, len(problems)).format(
+                          mod.name()) + "\n\n"
             + "\n\n".join(p.headline for p in problems) + "\n\n"
-            + self.tr("Check the mod's page for a version that matches your "
+            + translate("DagSorter", "Check the mod's page for a version that matches your "
                       "game and SKSE."))
 
     def _game_dir(self):
@@ -895,7 +1139,7 @@ class DagRestoreTool(mobase.IPluginTool):
         return "MO2-DAG-Sorter"
 
     def description(self) -> str:
-        return self.tr("Undo the last change to the mod list, or restore any "
+        return translate("DagSorter", "Undo the last change to the mod list, or restore any "
                        "earlier dated backup of it.")
 
     def version(self) -> mobase.VersionInfo:
@@ -911,17 +1155,14 @@ class DagRestoreTool(mobase.IPluginTool):
         return "MO2 DAG Sorter"
 
     def displayName(self) -> str:
-        return self.tr("Undo / Restore Mod List")
+        return translate("DagSorter", "Undo / Restore Mod List")
 
     def tooltip(self) -> str:
-        return self.tr("Go back to a previous version of the left pane")
+        return translate("DagSorter", "Go back to a previous version of the left pane")
 
     def icon(self):
         from PyQt6.QtGui import QIcon
         return QIcon()
-
-    def tr(self, text: str) -> str:
-        return QCoreApplication.translate("DagSorter", text)
 
     def _list_path(self) -> str:
         root = os.path.dirname(os.path.normpath(
@@ -935,22 +1176,23 @@ class DagRestoreTool(mobase.IPluginTool):
         found = backups.available(path)
         if not found:
             QMessageBox.information(
-                parent, self.tr("Undo / Restore Mod List"),
-                self.tr("No backups yet. One is written every time the "
+                parent, translate("DagSorter", "Undo / Restore Mod List"),
+                translate("DagSorter", "No backups yet. One is written every time the "
                         "sorter changes the list."))
             return
 
         current = sum(1 for n in modlist.read_modlist(path)[0])
         box = QMessageBox(parent)
-        box.setWindowTitle(self.tr("Undo / Restore Mod List"))
-        box.setText(self.tr("The list holds {} mods.").format(current))
-        box.setInformativeText(self.tr(
+        box.setWindowTitle(translate("DagSorter", "Undo / Restore Mod List"))
+        box.setText(translate("DagSorter", "The list holds %n mods.", None,
+                              current))
+        box.setInformativeText(translate("DagSorter", 
             "The most recent backup is:\n{}\n\nUndo goes straight back to "
             "it. Choose Restore to pick an older one.").format(
                 found[0].headline))
-        undo = box.addButton(self.tr("Undo last change"),
+        undo = box.addButton(translate("DagSorter", "Undo last change"),
                              QMessageBox.ButtonRole.AcceptRole)
-        pick = box.addButton(self.tr("Restore..."),
+        pick = box.addButton(translate("DagSorter", "Restore..."),
                              QMessageBox.ButtonRole.ActionRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
         box.exec()
@@ -965,8 +1207,8 @@ class DagRestoreTool(mobase.IPluginTool):
 
     def _restore(self, parent, path: str, backup) -> None:
         confirm = QMessageBox.question(
-            parent, self.tr("Undo / Restore Mod List"),
-            self.tr("Replace the current mod list with this one?\n\n{}\n\n"
+            parent, translate("DagSorter", "Undo / Restore Mod List"),
+            translate("DagSorter", "Replace the current mod list with this one?\n\n{}\n\n"
                     "The list being replaced is saved first, so this can be "
                     "undone too.").format(backup.headline))
         if confirm != QMessageBox.StandardButton.Yes:
@@ -974,9 +1216,9 @@ class DagRestoreTool(mobase.IPluginTool):
         saved = backups.restore(path, backup.path)
         self._organizer.refresh()
         QMessageBox.information(
-            parent, self.tr("Undo / Restore Mod List"),
-            self.tr("Restored {}.\n\nThe list it replaced was saved as:\n{}")
-            .format(backup.stamp, saved or self.tr("(not saved)")))
+            parent, translate("DagSorter", "Undo / Restore Mod List"),
+            translate("DagSorter", "Restored {}.\n\nThe list it replaced was saved as:\n{}")
+            .format(backup.stamp, saved or translate("DagSorter", "(not saved)")))
 
 
 class DagKeyTool(mobase.IPluginTool):
@@ -1013,7 +1255,7 @@ class DagKeyTool(mobase.IPluginTool):
         return "MO2-DAG-Sorter"
 
     def description(self) -> str:
-        return self.tr("Enter your own Nexus API key for the sorter to use "
+        return translate("DagSorter", "Enter your own Nexus API key for the sorter to use "
                        "when MO2's own connection is not enough.")
 
     def version(self) -> mobase.VersionInfo:
@@ -1029,17 +1271,14 @@ class DagKeyTool(mobase.IPluginTool):
         return "MO2 DAG Sorter"
 
     def displayName(self) -> str:
-        return self.tr("Nexus API Key")
+        return translate("DagSorter", "Nexus API Key")
 
     def tooltip(self) -> str:
-        return self.tr("Enter or test your own Nexus API key")
+        return translate("DagSorter", "Enter or test your own Nexus API key")
 
     def icon(self):
         from PyQt6.QtGui import QIcon
         return QIcon()
-
-    def tr(self, text: str) -> str:
-        return QCoreApplication.translate("DagSorter", text)
 
     def _bridge_works(self, domain: str) -> bool:
         """Whether MO2 will lend the sorter its own Nexus connection."""
@@ -1061,6 +1300,64 @@ class DagKeyTool(mobase.IPluginTool):
         key_ui.KeyDialog(self._organizer, domain,
                          self._bridge_works(domain),
                          QApplication.activeWindow()).exec()
+
+
+class DagInstallTool(mobase.IPluginTool):
+    """Change what happens to newly installed mods.
+
+    The install pop-up offers to remember its answer; this is where that
+    answer is changed afterwards, without digging through Settings ->
+    Plugins for a free-text value.
+    """
+
+    def __init__(self) -> None:
+        mobase.IPluginTool.__init__(self)
+        self._organizer = None
+
+    def init(self, organizer: mobase.IOrganizer) -> bool:
+        self._organizer = organizer
+        return True
+
+    def name(self) -> str:
+        return "MO2 DAG Sorter - New Mods"
+
+    def author(self) -> str:
+        return "MO2-DAG-Sorter"
+
+    def description(self) -> str:
+        return translate("DagSorter", "Choose whether newly installed mods "
+                         "are enabled, and sorted, automatically.")
+
+    def version(self) -> mobase.VersionInfo:
+        return VERSION
+
+    def requirements(self):
+        return []
+
+    def settings(self):
+        return []
+
+    def master(self) -> str:
+        return "MO2 DAG Sorter"
+
+    def displayName(self) -> str:
+        return translate("DagSorter", "New Mod Options")
+
+    def tooltip(self) -> str:
+        return translate("DagSorter", "What to do with a mod once MO2 has "
+                         "installed it")
+
+    def icon(self):
+        from PyQt6.QtGui import QIcon
+        return QIcon()
+
+    def display(self) -> None:
+        current = self._organizer.pluginSetting("MO2 DAG Sorter",
+                                                install_action.SETTING)
+        dialog = install_ui.OptionsDialog(current, QApplication.activeWindow())
+        if dialog.exec() == install_ui.OptionsDialog.DialogCode.Accepted:
+            self._organizer.setPluginSetting(
+                "MO2 DAG Sorter", install_action.SETTING, dialog.choice)
 
 
 class DagMenuTool(mobase.IPluginTool):
@@ -1091,7 +1388,7 @@ class DagMenuTool(mobase.IPluginTool):
         return "MO2-DAG-Sorter"
 
     def description(self) -> str:
-        return self.tr("Restore the sorter's right-click entries on the mod "
+        return translate("DagSorter", "Restore the sorter's right-click entries on the mod "
                        "list if they have gone missing.")
 
     def version(self) -> mobase.VersionInfo:
@@ -1107,18 +1404,15 @@ class DagMenuTool(mobase.IPluginTool):
         return "MO2 DAG Sorter"
 
     def displayName(self) -> str:
-        return self.tr("Restore Right-Click Menu")
+        return translate("DagSorter", "Restore Right-Click Menu")
 
     def tooltip(self) -> str:
-        return self.tr("Put the sorter's entries back on the mod list's "
+        return translate("DagSorter", "Put the sorter's entries back on the mod list's "
                        "right-click menu")
 
     def icon(self):
         from PyQt6.QtGui import QIcon
         return QIcon()
-
-    def tr(self, text: str) -> str:
-        return QCoreApplication.translate("DagSorter", text)
 
     def display(self) -> None:
         # _parentWidget first: MO2 hands tools the main window, which is
@@ -1133,16 +1427,16 @@ class DagMenuTool(mobase.IPluginTool):
             if window is not None:
                 break
 
-        title = self.tr("Restore Right-Click Menu")
+        title = translate("DagSorter", "Restore Right-Click Menu")
         was = context_menu.attached(window)
         ok, detail = context_menu.reattach(window)
 
         if ok and was:
-            body = self.tr("The entries were already attached, and "
+            body = translate("DagSorter", "The entries were already attached, and "
                            "have been reattached anyway.")
             body = body + BREAK + BREAK + detail
         elif ok:
-            body = self.tr("The entries were missing.") + " " + detail
+            body = translate("DagSorter", "The entries were missing.") + " " + detail
         else:
             body = detail
 
@@ -1170,7 +1464,8 @@ def create_plugins():
     this: the Extender's dialog offers to take that copy over and blank
     it.
     """
-    tools = [DagSorterTool(), DagRestoreTool(), DagMenuTool()]
+    tools = [DagSorterTool(), DagRestoreTool(), DagInstallTool(),
+             DagMenuTool()]
     if not nexus_api.installed():
         tools.append(DagKeyTool())
     return tools

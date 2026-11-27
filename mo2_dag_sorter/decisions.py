@@ -40,6 +40,8 @@ from __future__ import annotations
 import json
 import os
 
+from ._i18n import translate
+
 
 # How alike two names must be before a rule is moved from one to the other,
 # and how far ahead of the runner-up the winner has to be. Both only apply
@@ -375,5 +377,6 @@ class Decisions:
         for (a, b), first in sorted(self.first.items()):
             second = b if first == a else a
             out.append(edge_type(first, second, "user_rule",
-                                 self.notes.get((a, b), "your choice")))
+                                 self.notes.get((a, b)) or translate(
+                                     "Decisions", "your choice")))
         return out
